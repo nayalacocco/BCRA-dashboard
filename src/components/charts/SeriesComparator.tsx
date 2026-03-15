@@ -77,7 +77,7 @@ export function SeriesComparator({
   if (!series.length) {
     return (
       <div
-        className="flex items-center justify-center bg-slate-50 rounded-xl text-slate-400 text-sm"
+        className="flex items-center justify-center bg-slate-50 dark:bg-slate-800/50 rounded-xl text-slate-400 dark:text-slate-500 text-sm"
         style={{ height }}
       >
         Seleccioná al menos una variable para visualizar
@@ -110,7 +110,11 @@ export function SeriesComparator({
   return (
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+        <CartesianGrid
+          strokeDasharray="3 3"
+          stroke="var(--color-border, #e2e8f0)"
+          vertical={false}
+        />
         <XAxis
           dataKey="fecha"
           ticks={ticks}

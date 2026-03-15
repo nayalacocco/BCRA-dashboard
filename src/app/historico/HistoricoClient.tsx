@@ -86,18 +86,18 @@ export function HistoricoClient({ variables }: HistoricoClientProps) {
   return (
     <div className="space-y-6">
       {/* Filtros */}
-      <div className="card card-dark p-5">
-        <h2 className="font-semibold text-slate-900 mb-4">Filtros</h2>
+      <div className="card p-5">
+        <h2 className="font-semibold text-slate-900 dark:text-slate-100 mb-4">Filtros</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {/* Selector de variable */}
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
               Variable
             </label>
             <select
               value={selectedId}
               onChange={(e) => setSelectedId(Number(e.target.value))}
-              className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-bcra-500 bg-white"
+              className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-bcra-500 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
             >
               {variables.map((v) => {
                 const cfg = VARIABLES_CONFIG[v.idVariable];
@@ -113,7 +113,7 @@ export function HistoricoClient({ variables }: HistoricoClientProps) {
 
           {/* Selector de rango */}
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
               Período
             </label>
             <div className="flex flex-wrap gap-1.5">
@@ -124,7 +124,7 @@ export function HistoricoClient({ variables }: HistoricoClientProps) {
                   className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
                     rangeDays === days
                       ? "bg-bcra-600 text-white"
-                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
                   }`}
                 >
                   {label}
@@ -137,25 +137,25 @@ export function HistoricoClient({ variables }: HistoricoClientProps) {
           {rangeDays === 0 && (
             <div className="sm:col-span-2 lg:col-span-1 grid grid-cols-2 gap-2">
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
                   Desde
                 </label>
                 <input
                   type="date"
                   value={customDesde}
                   onChange={(e) => setCustomDesde(e.target.value)}
-                  className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-bcra-500"
+                  className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-bcra-500 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
                   Hasta
                 </label>
                 <input
                   type="date"
                   value={customHasta}
                   onChange={(e) => setCustomHasta(e.target.value)}
-                  className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-bcra-500"
+                  className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-bcra-500 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
                 />
               </div>
             </div>
@@ -164,19 +164,21 @@ export function HistoricoClient({ variables }: HistoricoClientProps) {
 
         {/* Info de la variable seleccionada */}
         {selectedVar && (
-          <div className="mt-4 p-3 bg-slate-50 rounded-lg flex flex-wrap gap-4 text-xs text-slate-500">
+          <div className="mt-4 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-lg flex flex-wrap gap-4 text-xs text-slate-500 dark:text-slate-400">
             <span>
-              <strong className="text-slate-700">Variable:</strong> {selectedVar.descripcion}
+              <strong className="text-slate-700 dark:text-slate-300">Variable:</strong>{" "}
+              {selectedVar.descripcion}
             </span>
             <span>
-              <strong className="text-slate-700">Unidad:</strong> {selectedVar.unidadExpresion}
+              <strong className="text-slate-700 dark:text-slate-300">Unidad:</strong>{" "}
+              {selectedVar.unidadExpresion}
             </span>
             <span>
-              <strong className="text-slate-700">Último valor:</strong>{" "}
+              <strong className="text-slate-700 dark:text-slate-300">Último valor:</strong>{" "}
               {selectedVar.ultValorInformado?.toLocaleString("es-AR", { maximumFractionDigits: 4 })}
             </span>
             <span>
-              <strong className="text-slate-700">Total disponible:</strong>{" "}
+              <strong className="text-slate-700 dark:text-slate-300">Total disponible:</strong>{" "}
               {totalCount.toLocaleString("es-AR")} registros
             </span>
           </div>
@@ -184,11 +186,11 @@ export function HistoricoClient({ variables }: HistoricoClientProps) {
       </div>
 
       {/* Gráfico */}
-      <div className="card card-dark p-6">
-        <h2 className="font-semibold text-slate-900 mb-4">
+      <div className="card p-6">
+        <h2 className="font-semibold text-slate-900 dark:text-slate-100 mb-4">
           Evolución histórica
           {selectedVar && (
-            <span className="text-sm font-normal text-slate-500 ml-2">
+            <span className="text-sm font-normal text-slate-500 dark:text-slate-400 ml-2">
               — {config?.label ?? selectedVar.descripcion}
             </span>
           )}
@@ -209,8 +211,8 @@ export function HistoricoClient({ variables }: HistoricoClientProps) {
       </div>
 
       {/* Tabla */}
-      <div className="card card-dark p-6">
-        <h2 className="font-semibold text-slate-900 mb-4">
+      <div className="card p-6">
+        <h2 className="font-semibold text-slate-900 dark:text-slate-100 mb-4">
           Datos tabulares
         </h2>
 

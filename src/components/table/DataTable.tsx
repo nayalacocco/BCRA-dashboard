@@ -84,7 +84,7 @@ export function DataTable({
     return (
       <div className="animate-pulse space-y-2">
         {Array.from({ length: 8 }).map((_, i) => (
-          <div key={i} className="h-10 bg-slate-100 rounded" />
+          <div key={i} className="h-10 bg-slate-100 dark:bg-slate-800 rounded" />
         ))}
       </div>
     );
@@ -100,12 +100,12 @@ export function DataTable({
             placeholder="Filtrar por fecha (ej: 2025-12)"
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            className="text-sm border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-bcra-500 w-56"
+            className="text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-bcra-500 w-56 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
           />
           {search && (
             <button
               onClick={() => { setSearch(""); setPage(1); }}
-              className="text-xs text-slate-400 hover:text-slate-700"
+              className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
             >
               ✕ Limpiar
             </button>
@@ -113,7 +113,7 @@ export function DataTable({
         </div>
 
         <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-slate-500 dark:text-slate-400">
             {filtered.length.toLocaleString("es-AR")} registros
           </span>
           <button
@@ -131,26 +131,26 @@ export function DataTable({
       </div>
 
       {/* Tabla */}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 scrollbar-thin">
+      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 scrollbar-thin">
         <table className="w-full text-sm">
           <thead>
-            <tr className="bg-slate-50 border-b border-slate-200">
+            <tr className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700">
               <th
-                className="text-left px-4 py-3 font-semibold text-slate-700 cursor-pointer hover:bg-slate-100 select-none"
+                className="text-left px-4 py-3 font-semibold text-slate-700 dark:text-slate-300 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/60 select-none"
                 onClick={toggleSort}
               >
                 <div className="flex items-center gap-1">
                   Fecha
-                  <span className="text-slate-400">
+                  <span className="text-slate-400 dark:text-slate-500">
                     {sortDir === "desc" ? "↓" : "↑"}
                   </span>
                 </div>
               </th>
-              <th className="text-right px-4 py-3 font-semibold text-slate-700">
+              <th className="text-right px-4 py-3 font-semibold text-slate-700 dark:text-slate-300">
                 Valor
               </th>
               {unit && (
-                <th className="text-left px-4 py-3 font-semibold text-slate-500 text-xs">
+                <th className="text-left px-4 py-3 font-semibold text-slate-500 dark:text-slate-400 text-xs">
                   Unidad
                 </th>
               )}
@@ -159,7 +159,7 @@ export function DataTable({
           <tbody>
             {paginated.length === 0 ? (
               <tr>
-                <td colSpan={3} className="text-center py-8 text-slate-400 text-sm">
+                <td colSpan={3} className="text-center py-8 text-slate-400 dark:text-slate-500 text-sm">
                   No se encontraron datos para el filtro aplicado
                 </td>
               </tr>
@@ -167,21 +167,21 @@ export function DataTable({
               paginated.map((row, i) => (
                 <tr
                   key={row.fecha}
-                  className={`border-b border-slate-100 hover:bg-slate-50 transition-colors ${
+                  className={`border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${
                     i === 0 ? "font-medium" : ""
                   }`}
                 >
-                  <td className="px-4 py-3 font-mono text-slate-700">
+                  <td className="px-4 py-3 font-mono text-slate-700 dark:text-slate-300">
                     {formatDate(row.fecha)}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
+                  <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900 dark:text-slate-100">
                     {row.valor.toLocaleString("es-AR", {
                       minimumFractionDigits: decimals,
                       maximumFractionDigits: decimals,
                     })}
                   </td>
                   {unit && (
-                    <td className="px-4 py-3 text-slate-400 text-xs">{unit}</td>
+                    <td className="px-4 py-3 text-slate-400 dark:text-slate-500 text-xs">{unit}</td>
                   )}
                 </tr>
               ))
@@ -193,35 +193,35 @@ export function DataTable({
       {/* Paginación */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between text-sm">
-          <span className="text-slate-500">
+          <span className="text-slate-500 dark:text-slate-400">
             Página {page} de {totalPages}
           </span>
           <div className="flex gap-1">
             <button
               onClick={() => setPage(1)}
               disabled={page === 1}
-              className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 text-xs"
+              className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs text-slate-700 dark:text-slate-300"
             >
               «
             </button>
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1}
-              className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 text-xs"
+              className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs text-slate-700 dark:text-slate-300"
             >
               ‹ Ant.
             </button>
             <button
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page === totalPages}
-              className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 text-xs"
+              className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs text-slate-700 dark:text-slate-300"
             >
               Sig. ›
             </button>
             <button
               onClick={() => setPage(totalPages)}
               disabled={page === totalPages}
-              className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 text-xs"
+              className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs text-slate-700 dark:text-slate-300"
             >
               »
             </button>

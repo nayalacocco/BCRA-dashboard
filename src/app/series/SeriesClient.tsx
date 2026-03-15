@@ -168,8 +168,10 @@ export function SeriesClient({ variables }: SeriesClientProps) {
       <section>
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
           <div>
-            <h2 className="text-xl font-bold text-slate-900">Comparador de Series</h2>
-            <p className="text-sm text-slate-500 mt-0.5">
+            <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
+              Comparador de Series
+            </h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
               Seleccioná hasta 6 variables para comparar su evolución
             </p>
           </div>
@@ -186,12 +188,14 @@ export function SeriesClient({ variables }: SeriesClientProps) {
           </button>
         </div>
 
-        <div className="card card-dark p-5 mb-4">
+        <div className="card p-5 mb-4">
           {/* Controles del comparador */}
           <div className="flex flex-wrap items-center gap-4 mb-4">
             {/* Período */}
             <div>
-              <span className="text-xs font-medium text-slate-600 block mb-1.5">Período</span>
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-400 block mb-1.5">
+                Período
+              </span>
               <div className="flex flex-wrap gap-1.5">
                 {DATE_RANGES.map(({ label, days }) => (
                   <button
@@ -200,7 +204,7 @@ export function SeriesClient({ variables }: SeriesClientProps) {
                     className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
                       rangeDays === days
                         ? "bg-bcra-600 text-white"
-                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                        : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
                     }`}
                   >
                     {label}
@@ -215,7 +219,7 @@ export function SeriesClient({ variables }: SeriesClientProps) {
                 <div
                   onClick={() => setNormalized((n) => !n)}
                   className={`relative w-10 h-5 rounded-full transition-colors ${
-                    normalized ? "bg-bcra-600" : "bg-slate-200"
+                    normalized ? "bg-bcra-600" : "bg-slate-200 dark:bg-slate-700"
                   }`}
                 >
                   <div
@@ -224,7 +228,7 @@ export function SeriesClient({ variables }: SeriesClientProps) {
                     }`}
                   />
                 </div>
-                <span className="text-xs font-medium text-slate-600">
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-400">
                   Base 100 (normalizado)
                 </span>
               </label>
@@ -233,11 +237,11 @@ export function SeriesClient({ variables }: SeriesClientProps) {
 
           {/* Selector de variables */}
           <div className="mb-4">
-            <span className="text-xs font-medium text-slate-600 block mb-2">
+            <span className="text-xs font-medium text-slate-600 dark:text-slate-400 block mb-2">
               Variables seleccionadas ({selectedIds.length}/6)
             </span>
             <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto scrollbar-thin">
-              {variables.slice(0, 50).map((v) => {
+              {variables.map((v) => {
                 const cfg = VARIABLES_CONFIG[v.idVariable];
                 const label = cfg?.label ?? `ID ${v.idVariable}`;
                 const isSelected = selectedIds.includes(v.idVariable);
@@ -253,7 +257,7 @@ export function SeriesClient({ variables }: SeriesClientProps) {
                     className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
                       isSelected
                         ? "border-current"
-                        : "bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200"
+                        : "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
                     }`}
                   >
                     {isSelected && "✓ "}{label}
@@ -281,26 +285,26 @@ export function SeriesClient({ variables }: SeriesClientProps) {
       {/* ======== SECCIÓN 2: RATIO BUILDER ======== */}
       <section>
         <div className="mb-4">
-          <h2 className="text-xl font-bold text-slate-900">Ratio Builder</h2>
-          <p className="text-sm text-slate-500 mt-0.5">
+          <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">Ratio Builder</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
             Calculá el cociente entre dos variables a lo largo del tiempo
           </p>
         </div>
 
-        <div className="card card-dark p-5">
+        <div className="card p-5">
           {/* Controles del ratio */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
             {/* Numerador */}
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
                 Numerador (A)
               </label>
               <select
                 value={ratioNum}
                 onChange={(e) => setRatioNum(Number(e.target.value))}
-                className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-bcra-500 bg-white"
+                className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-bcra-500 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
               >
-                {variables.slice(0, 50).map((v) => {
+                {variables.map((v) => {
                   const cfg = VARIABLES_CONFIG[v.idVariable];
                   return (
                     <option key={v.idVariable} value={v.idVariable}>
@@ -313,15 +317,15 @@ export function SeriesClient({ variables }: SeriesClientProps) {
 
             {/* Denominador */}
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
                 Denominador (B)
               </label>
               <select
                 value={ratioDen}
                 onChange={(e) => setRatioDen(Number(e.target.value))}
-                className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-bcra-500 bg-white"
+                className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-bcra-500 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
               >
-                {variables.slice(0, 50).map((v) => {
+                {variables.map((v) => {
                   const cfg = VARIABLES_CONFIG[v.idVariable];
                   return (
                     <option key={v.idVariable} value={v.idVariable}>
@@ -334,7 +338,7 @@ export function SeriesClient({ variables }: SeriesClientProps) {
 
             {/* Período */}
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
                 Período
               </label>
               <div className="flex flex-wrap gap-1.5">
@@ -345,7 +349,7 @@ export function SeriesClient({ variables }: SeriesClientProps) {
                     className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
                       ratioRangeDays === days
                         ? "bg-bcra-600 text-white"
-                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                        : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
                     }`}
                   >
                     {label}
@@ -356,21 +360,21 @@ export function SeriesClient({ variables }: SeriesClientProps) {
           </div>
 
           {/* Label del ratio */}
-          <div className="mb-4 p-3 bg-slate-50 rounded-lg">
-            <span className="text-sm text-slate-600">
-              <strong className="text-slate-900">Ratio:</strong>{" "}
-              <span className="font-mono text-bcra-700">
+          <div className="mb-4 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-lg">
+            <span className="text-sm text-slate-600 dark:text-slate-400">
+              <strong className="text-slate-900 dark:text-slate-100">Ratio:</strong>{" "}
+              <span className="font-mono text-bcra-700 dark:text-bcra-400">
                 {VARIABLES_CONFIG[ratioNum]?.label ?? varNum?.descripcion ?? `ID ${ratioNum}`}
               </span>
               {" / "}
-              <span className="font-mono text-bcra-700">
+              <span className="font-mono text-bcra-700 dark:text-bcra-400">
                 {VARIABLES_CONFIG[ratioDen]?.label ?? varDen?.descripcion ?? `ID ${ratioDen}`}
               </span>
             </span>
             {ratioData.length > 0 && (
-              <span className="ml-4 text-xs text-slate-500">
+              <span className="ml-4 text-xs text-slate-500 dark:text-slate-400">
                 Último:{" "}
-                <strong className="text-slate-700 font-mono">
+                <strong className="text-slate-700 dark:text-slate-300 font-mono">
                   {ratioData[ratioData.length - 1]?.ratio.toLocaleString("es-AR", {
                     maximumFractionDigits: 6,
                   })}
