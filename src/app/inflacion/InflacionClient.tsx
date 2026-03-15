@@ -305,12 +305,14 @@ export function InflacionClient({ data }: { data: InflacionData }) {
         </div>
       </div>
 
-      {/* ---- PERIOD SELECTOR ---- */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
-          Período:
-        </span>
-        <PeriodSelector value={period} onChange={setPeriod} />
+      {/* ---- PERIOD SELECTOR (sticky) ---- */}
+      <div className="sticky top-16 z-40 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-3 bg-white/90 dark:bg-slate-950/90 backdrop-blur-sm border-b border-slate-200/60 dark:border-slate-800/60">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+            Período:
+          </span>
+          <PeriodSelector value={period} onChange={setPeriod} />
+        </div>
       </div>
 
       {/* ================================================================
