@@ -57,7 +57,7 @@ export function HistoricalChart({
   if (!data.length) {
     return (
       <div
-        className="flex items-center justify-center bg-slate-50 rounded-xl text-slate-400 text-sm"
+        className="flex items-center justify-center bg-slate-50 dark:bg-slate-800/50 rounded-xl text-slate-400 dark:text-slate-600 text-sm"
         style={{ height }}
       >
         Sin datos para mostrar
@@ -78,7 +78,7 @@ export function HistoricalChart({
         {showGrid && (
           <CartesianGrid
             strokeDasharray="3 3"
-            stroke="#e2e8f0"
+            stroke="var(--color-border, #e2e8f0)"
             vertical={false}
           />
         )}
