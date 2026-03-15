@@ -21,12 +21,19 @@ export const revalidate = 1800;
 const HISTORIC_IDS = [1, 5, 4, 15, 109, 78, 27, 28, 29, 7];
 
 async function DashboardContent() {
+  // INDEC siempre se fetcha independientemente del estado del BCRA
+  const indecPromise = fetchDashboardIndecData();
+
+  let latestValues: Record<number, { valor: number; fecha: string } | null> = {};
+  let historicData: Record<number, HistoricPoint[]> = {};
+  let pageGeneratedAt: string | null = null;
+  let lastBCRAUpdate: string | undefined;
+  let bcraOk = false;
+
   try {
-    // 1. Últimos valores de todas las variables
+    // 1. Últimos valores de todas las variables BCRA
     const allVariables = await getAllVariables();
 
-    // Construir mapa de últimos valores
-    const latestValues: Record<number, { valor: number; fecha: string } | null> = {};
     for (const v of allVariables) {
       latestValues[v.idVariable] =
         v.ultValorInformado != null && v.ultFechaInformada != null
@@ -34,83 +41,64 @@ async function DashboardContent() {
           : null;
     }
 
-    // Asegurarnos de que tenemos los IDs del dashboard extendido
-    const missingIds = EXTENDED_DASHBOARD_IDS.filter(
-      (id) => latestValues[id] == null
-    );
+    const missingIds = EXTENDED_DASHBOARD_IDS.filter((id) => latestValues[id] == null);
     if (missingIds.length > 0) {
       console.warn("[Dashboard] IDs no encontrados en allVariables:", missingIds);
     }
 
-    // 2. Histórico extendido para los IDs clave + INDEC series (en paralelo)
-    const [historicResults, indecData] = await Promise.all([
-      Promise.allSettled(
-        HISTORIC_IDS.map((id) => getVariableHistorico(id, { limit: 2000 }))
-      ),
-      fetchDashboardIndecData(),
-    ]);
+    // 2. Histórico BCRA en paralelo con la espera de INDEC
+    const historicResults = await Promise.allSettled(
+      HISTORIC_IDS.map((id) => getVariableHistorico(id, { limit: 2000 }))
+    );
 
-    const historicData: Record<number, HistoricPoint[]> = {};
     historicResults.forEach((result, index) => {
       const id = HISTORIC_IDS[index];
       if (result.status === "fulfilled") {
-        // La API devuelve de reciente → antiguo; invertir para gráficos (antiguo → reciente)
-        const detalle = [...(result.value.data.detalle ?? [])].reverse();
-        historicData[id] = detalle;
+        historicData[id] = [...(result.value.data.detalle ?? [])].reverse();
       } else {
         historicData[id] = [];
         console.error(`[Dashboard] Error fetching historico ID ${id}:`, result.reason);
       }
     });
 
-    // 3. Metadata de página
-    const pageGeneratedAt = formatDateTime(new Date());
-    const lastBCRAUpdate =
+    pageGeneratedAt = formatDateTime(new Date());
+    lastBCRAUpdate =
       allVariables.find((v) => v.idVariable === 1)?.ultFechaInformada ??
       allVariables[0]?.ultFechaInformada;
 
-    // Persist snapshot to KV so we have a fallback if the API goes down later
-    await saveToKV({ latestValues, historicData, lastBCRAUpdate, indecData });
-
-    return (
-      <DashboardClient
-        latestValues={latestValues}
-        historicData={historicData}
-        pageGeneratedAt={pageGeneratedAt}
-        lastBCRAUpdate={lastBCRAUpdate}
-        indecData={indecData}
-      />
-    );
+    bcraOk = true;
   } catch (error) {
     console.error("[Dashboard] BCRA API error:", error);
 
-    // Try to serve last known-good snapshot from KV
+    // Intentar recuperar BCRA desde KV cache
     const cached = await loadFromKV();
     if (cached) {
-      console.log("[Dashboard] Serving KV cache from", cached.savedAt);
-      return (
-        <DashboardClient
-          latestValues={cached.latestValues as Record<number, { valor: number; fecha: string } | null>}
-          historicData={cached.historicData as Record<number, HistoricPoint[]>}
-          pageGeneratedAt={cached.savedAt}
-          lastBCRAUpdate={cached.lastBCRAUpdate}
-          kvCachedAt={cached.savedAt}
-          indecData={cached.indecData}
-        />
-      );
+      console.log("[Dashboard] Serving BCRA from KV cache:", cached.savedAt);
+      latestValues = cached.latestValues as Record<number, { valor: number; fecha: string } | null>;
+      historicData = cached.historicData as Record<number, HistoricPoint[]>;
+      pageGeneratedAt = cached.savedAt;
+      lastBCRAUpdate = cached.lastBCRAUpdate;
     }
-
-    // No KV cache either — let client handle recovery
-    return (
-      <DashboardClient
-        latestValues={{}}
-        historicData={{}}
-        pageGeneratedAt={null}
-        lastBCRAUpdate={undefined}
-        initialFetchFailed={true}
-      />
-    );
+    // Si no hay KV cache, latestValues/historicData quedan vacíos — los cards muestran "—"
   }
+
+  // Resolver INDEC siempre (puede haber terminado mientras esperábamos BCRA)
+  const indecData = await indecPromise;
+
+  // Persistir en KV si BCRA anduvo bien
+  if (bcraOk) {
+    await saveToKV({ latestValues, historicData, lastBCRAUpdate, indecData });
+  }
+
+  return (
+    <DashboardClient
+      latestValues={latestValues}
+      historicData={historicData}
+      pageGeneratedAt={pageGeneratedAt}
+      lastBCRAUpdate={lastBCRAUpdate}
+      indecData={indecData}
+    />
+  );
 }
 
 export default function DashboardPage() {
