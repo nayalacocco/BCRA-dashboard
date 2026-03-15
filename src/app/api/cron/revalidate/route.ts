@@ -14,7 +14,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { revalidateTag } from "next/cache";
+import { revalidateTag, revalidatePath } from "next/cache";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +43,9 @@ export async function GET(request: NextRequest) {
 
   try {
     // Invalidar todas las caché tagged con "bcra-data"
-    revalidateTag("bcra-data");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (revalidateTag as any)("bcra-data");
+    revalidatePath("/", "layout");
 
     const timestamp = new Date().toISOString();
     console.log(`[CRON] Caché invalidada exitosamente a las ${timestamp}`);
