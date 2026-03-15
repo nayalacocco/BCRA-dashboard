@@ -4,7 +4,7 @@ import { GOVERNMENT_PERIODS } from "@/lib/bcra/constants";
 
 export type Period =
   | "1m" | "3m" | "6m" | "1y" | "2y" | "5y" | "max"
-  | "milei" | "fernandez" | "macri" | "cfk2";
+  | "milei" | "fernandez" | "macri" | "cfk2" | "cfk1" | "nk";
 
 interface PeriodSelectorProps {
   value: Period;
@@ -26,6 +26,8 @@ const govColors: Record<string, string> = {
   fernandez: "data-[active=true]:bg-blue-600 data-[active=true]:text-white",
   macri:     "data-[active=true]:bg-amber-600 data-[active=true]:text-white",
   cfk2:      "data-[active=true]:bg-emerald-700 data-[active=true]:text-white",
+  cfk1:      "data-[active=true]:bg-emerald-600 data-[active=true]:text-white",
+  nk:        "data-[active=true]:bg-teal-600 data-[active=true]:text-white",
 };
 
 export function PeriodSelector({ value, onChange }: PeriodSelectorProps) {

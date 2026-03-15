@@ -22,8 +22,8 @@ export default async function HistoricoPage() {
     return (
       <div>
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-slate-900">Histórico de Variables</h1>
-          <p className="text-slate-500 mt-1 text-sm">
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Histórico de Variables</h1>
+          <p className="text-slate-500 dark:text-slate-400 mt-1 text-sm">
             Seleccioná una variable y un período para ver la evolución histórica y exportar datos.
           </p>
         </div>

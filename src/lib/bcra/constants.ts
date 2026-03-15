@@ -196,7 +196,7 @@ export const GOVERNMENT_PERIODS: GovernmentPeriod[] = [
   },
   {
     key: "fernandez",
-    label: "Fernández",
+    label: "AF",
     presidente: "Alberto Fernández",
     desde: "2019-12-10",
     hasta: "2023-12-09",
@@ -204,7 +204,7 @@ export const GOVERNMENT_PERIODS: GovernmentPeriod[] = [
   },
   {
     key: "macri",
-    label: "Macri",
+    label: "MM",
     presidente: "Mauricio Macri",
     desde: "2015-12-10",
     hasta: "2019-12-09",
@@ -217,6 +217,22 @@ export const GOVERNMENT_PERIODS: GovernmentPeriod[] = [
     desde: "2011-12-10",
     hasta: "2015-12-09",
     color: "#065f46",
+  },
+  {
+    key: "cfk1",
+    label: "CFK I",
+    presidente: "Cristina Fernández de Kirchner",
+    desde: "2007-12-10",
+    hasta: "2011-12-09",
+    color: "#047857",
+  },
+  {
+    key: "nk",
+    label: "NK",
+    presidente: "Néstor Kirchner",
+    desde: "2003-05-25",
+    hasta: "2007-12-09",
+    color: "#0d9488",
   },
 ];
 
