@@ -81,12 +81,15 @@ function toISO(d: Date) {
   return d.toISOString().split("T")[0];
 }
 
-async function fetchRepoHistory(months = 6): Promise<RawRepo[]> {
+// Max 4 pages (200 records ≈ 2 months) — keeps total fetch time well under Vercel's 10s limit
+const MAX_REPO_PAGES = 4;
+
+async function fetchRepoHistory(months = 3): Promise<RawRepo[]> {
   const desde = new Date();
   desde.setMonth(desde.getMonth() - months);
 
   const all: RawRepo[] = [];
-  for (let page = 1; page <= 10; page++) {
+  for (let page = 1; page <= MAX_REPO_PAGES; page++) {
     try {
       const batch = await fetchMAE("/mercado/cotizaciones/repo", {
         fechaDesde: toISO(desde),
@@ -96,7 +99,7 @@ async function fetchRepoHistory(months = 6): Promise<RawRepo[]> {
 
       if (!Array.isArray(batch) || batch.length === 0) break;
       all.push(...batch);
-      if (batch.length < 50) break;  // last page
+      if (batch.length < 50) break;  // last page reached
     } catch (err) {
       console.error(`[MAE] repo page ${page} failed:`, err);
       break;
