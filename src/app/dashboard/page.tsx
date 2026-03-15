@@ -4,7 +4,6 @@ import { getAllVariables, getVariableHistorico } from "@/lib/bcra/client";
 import { EXTENDED_DASHBOARD_IDS } from "@/lib/bcra/constants";
 import { DashboardClient, type HistoricPoint } from "./DashboardClient";
 import { ChartSkeleton } from "@/components/ui/LoadingState";
-import { ErrorState } from "@/components/ui/ErrorState";
 import { formatDateTime } from "@/lib/bcra/format";
 
 export const metadata: Metadata = {
@@ -77,8 +76,16 @@ async function DashboardContent() {
     );
   } catch (error) {
     console.error("[Dashboard]", error);
+    // Don't cache a static error page via ISR.
+    // Let DashboardClient recover on the client via localStorage + auto-retry.
     return (
-      <ErrorState message="No se pudieron cargar los datos del BCRA. La API podría estar temporalmente no disponible." />
+      <DashboardClient
+        latestValues={{}}
+        historicData={{}}
+        pageGeneratedAt={null}
+        lastBCRAUpdate={undefined}
+        initialFetchFailed={true}
+      />
     );
   }
 }

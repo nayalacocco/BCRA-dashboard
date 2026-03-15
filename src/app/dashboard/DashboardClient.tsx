@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { HistoricalChart } from "@/components/charts/HistoricalChart";
 import { DeltaKPICard } from "@/components/dashboard/DeltaKPICard";
 import { PendingCard } from "@/components/dashboard/PendingCard";
@@ -21,15 +21,18 @@ export interface HistoricPoint {
 }
 
 export interface DashboardClientProps {
-  /** Últimos valores por variable ID */
   latestValues: Record<number, { valor: number; fecha: string } | null>;
-  /** Histórico completo por variable ID (ordenado de antiguo a reciente) */
   historicData: Record<number, HistoricPoint[]>;
-  /** Timestamp de generación de la página (ART) */
-  pageGeneratedAt: string;
-  /** Última fecha informada por el BCRA */
+  pageGeneratedAt: string | null;
   lastBCRAUpdate?: string;
+  /** true when server-side fetch failed — triggers client-side fallback */
+  initialFetchFailed?: boolean;
 }
+
+// IDs fetched by the dashboard
+const DASHBOARD_IDS = [1, 5, 4, 15, 109, 78, 27, 28, 29, 7];
+const CACHE_KEY = "bcra-dashboard-v1";
+const RETRY_SECONDS = 300;
 
 // ---- Helpers ----
 
@@ -114,12 +117,143 @@ function RatioCard({
 
 // ---- Main component ----
 
+type DataStatus = "ok" | "stale" | "fetching" | "error";
+
 export function DashboardClient({
-  latestValues,
-  historicData,
-  pageGeneratedAt,
-  lastBCRAUpdate,
+  latestValues: serverLatestValues,
+  historicData: serverHistoricData,
+  pageGeneratedAt: serverGeneratedAt,
+  lastBCRAUpdate: serverLastBCRAUpdate,
+  initialFetchFailed = false,
 }: DashboardClientProps) {
+  const hasServerData = Object.keys(serverLatestValues).length > 0;
+
+  const [latestValues, setLatestValues] = useState(serverLatestValues);
+  const [historicData, setHistoricData] = useState(serverHistoricData);
+  const [pageGeneratedAt, setPageGeneratedAt] = useState<string | null>(serverGeneratedAt);
+  const [lastBCRAUpdate, setLastBCRAUpdate] = useState<string | undefined>(serverLastBCRAUpdate);
+  const [dataStatus, setDataStatus] = useState<DataStatus>(
+    !initialFetchFailed && hasServerData ? "ok" : "error"
+  );
+  const [retryIn, setRetryIn] = useState(0);
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
+
+  const fetchingRef = useRef(false);
+  const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Ref so the setInterval callback always calls the latest function instance
+  const fetchFnRef = useRef<() => Promise<void>>(async () => {});
+
+  async function fetchClientData() {
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
+    if (retryTimerRef.current) { clearInterval(retryTimerRef.current); retryTimerRef.current = null; }
+    setRetryIn(0);
+    setDataStatus((s) => (s === "stale" ? "stale" : "fetching"));
+
+    try {
+      const varsRes = await fetch(`/api/bcra/variables?ids=${DASHBOARD_IDS.join(",")}`);
+      if (!varsRes.ok) throw new Error("vars");
+      const { data: variables } = await varsRes.json();
+
+      const newLatest: Record<number, { valor: number; fecha: string } | null> = {};
+      for (const v of variables) {
+        newLatest[v.idVariable] =
+          v.ultValorInformado != null
+            ? { valor: v.ultValorInformado, fecha: v.ultFechaInformada }
+            : null;
+      }
+
+      const histResults = await Promise.allSettled(
+        DASHBOARD_IDS.map((id) =>
+          fetch(`/api/bcra/historico/${id}?limit=2000`).then((r) => r.json())
+        )
+      );
+      const newHist: Record<number, HistoricPoint[]> = {};
+      histResults.forEach((r, i) => {
+        const id = DASHBOARD_IDS[i];
+        newHist[id] =
+          r.status === "fulfilled" && r.value?.data?.detalle
+            ? ([...r.value.data.detalle].reverse() as HistoricPoint[])
+            : [];
+      });
+
+      const now = new Date().toISOString();
+      const bcraDate = (variables as Array<{ idVariable: number; ultFechaInformada?: string }>)
+        .find((v) => v.idVariable === 1)?.ultFechaInformada;
+
+      setLatestValues(newLatest);
+      setHistoricData(newHist);
+      setPageGeneratedAt(now);
+      setLastBCRAUpdate(bcraDate);
+      setDataStatus("ok");
+
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          latestValues: newLatest, historicData: newHist,
+          pageGeneratedAt: now, lastBCRAUpdate: bcraDate,
+          savedAt: now,
+        }));
+      } catch { /* QuotaExceededError */ }
+    } catch {
+      setDataStatus((s) => (s === "stale" ? "stale" : "error"));
+      let countdown = RETRY_SECONDS;
+      setRetryIn(countdown);
+      retryTimerRef.current = setInterval(() => {
+        countdown -= 1;
+        setRetryIn(countdown);
+        if (countdown <= 0) {
+          if (retryTimerRef.current) { clearInterval(retryTimerRef.current); retryTimerRef.current = null; }
+          fetchingRef.current = false;
+          fetchFnRef.current(); // call via stable ref to avoid stale closure
+        }
+      }, 1000);
+    } finally {
+      fetchingRef.current = false;
+    }
+  }
+
+  // Keep the ref in sync with the latest function instance
+  fetchFnRef.current = fetchClientData;
+
+  useEffect(() => {
+    // Good server data → persist to localStorage
+    if (!initialFetchFailed && hasServerData) {
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          latestValues: serverLatestValues,
+          historicData: serverHistoricData,
+          pageGeneratedAt: serverGeneratedAt,
+          lastBCRAUpdate: serverLastBCRAUpdate,
+          savedAt: new Date().toISOString(),
+        }));
+      } catch { /* ignore */ }
+      return;
+    }
+
+    // Server failed → try localStorage cache first, then client fetch
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.latestValues && Object.keys(parsed.latestValues).length > 0) {
+          setLatestValues(parsed.latestValues);
+          setHistoricData(parsed.historicData ?? {});
+          setPageGeneratedAt(parsed.pageGeneratedAt ?? null);
+          setLastBCRAUpdate(parsed.lastBCRAUpdate);
+          setCachedAt(parsed.savedAt ?? null);
+          setDataStatus("stale");
+        }
+      }
+    } catch { /* ignore */ }
+
+    fetchClientData();
+
+    return () => {
+      if (retryTimerRef.current) clearInterval(retryTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [period, setPeriod] = useState<Period>("1y");
 
   // Filter all historical data by selected period
@@ -138,8 +272,62 @@ export function DashboardClient({
     (latestVal(latestValues, 109) ?? 0) / (latestVal(latestValues, 1) ?? 1);
   const usdOficial = latestVal(latestValues, 5) ?? null;
 
+  // If truly no data and still erroring — show minimal retry UI
+  const hasAnyData = Object.keys(latestValues).length > 0;
+  if (!hasAnyData && (dataStatus === "error" || dataStatus === "fetching")) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-5 text-center px-4">
+        <div className="w-16 h-16 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-3xl">
+          {dataStatus === "fetching" ? (
+            <span className="animate-spin inline-block">⟳</span>
+          ) : "⚠️"}
+        </div>
+        <div>
+          <h2 className="text-xl font-bold text-slate-700 dark:text-slate-200 mb-1">
+            {dataStatus === "fetching" ? "Cargando datos…" : "No se pudieron cargar los datos"}
+          </h2>
+          <p className="text-slate-500 dark:text-slate-400 max-w-md text-sm">
+            La API del BCRA podría estar temporalmente no disponible.
+            {retryIn > 0 && ` Reintentando en ${retryIn} segundos.`}
+          </p>
+        </div>
+        <button
+          onClick={() => { fetchingRef.current = false; fetchClientData(); }}
+          className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors text-sm"
+        >
+          Reintentar ahora
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-10">
+      {/* ---- STATUS BANNERS ---- */}
+      {dataStatus === "stale" && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-sm text-amber-700 dark:text-amber-400">
+          <span>⚠️</span>
+          <span>
+            Mostrando datos en caché
+            {cachedAt ? ` del ${new Date(cachedAt).toLocaleDateString("es-AR")}` : ""}.
+            La API del BCRA no está disponible temporalmente.
+            {retryIn > 0 && ` Reintentando en ${retryIn}s.`}
+          </span>
+          <button
+            onClick={() => { fetchingRef.current = false; fetchClientData(); }}
+            className="ml-auto text-xs font-semibold underline whitespace-nowrap"
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
+      {dataStatus === "fetching" && hasAnyData && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm text-blue-600 dark:text-blue-400">
+          <span className="animate-spin inline-block">⟳</span>
+          <span>Actualizando datos…</span>
+        </div>
+      )}
+
       {/* ---- PAGE HEADER ---- */}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
@@ -157,9 +345,11 @@ export function DashboardClient({
               Datos al: {formatDate(lastBCRAUpdate)}
             </div>
           )}
-          <p className="text-xs text-slate-400 dark:text-slate-600">
-            Página generada: {pageGeneratedAt} ART
-          </p>
+          {pageGeneratedAt && (
+            <p className="text-xs text-slate-400 dark:text-slate-600">
+              Actualizado: {new Date(pageGeneratedAt).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })} ART
+            </p>
+          )}
         </div>
       </div>
 
