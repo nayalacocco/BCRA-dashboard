@@ -533,6 +533,14 @@ export function DashboardClient({
           BLOQUE 4: EXPECTATIVAS
       ================================================================ */}
       <BlockSection title="Expectativas e Inflación" icon="📊" color="orange">
+        <div className="flex justify-end mb-3">
+          <Link
+            href="/inflacion"
+            className="text-xs font-medium text-orange-700 dark:text-orange-400 hover:underline flex items-center gap-1"
+          >
+            Ver análisis completo →
+          </Link>
+        </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
           <DeltaKPICard
             label="Inflación Mensual"

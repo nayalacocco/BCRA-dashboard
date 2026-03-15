@@ -7,6 +7,7 @@ import { ThemeToggle } from "@/components/theme/ThemeToggle";
 const navLinks = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/sector-externo", label: "Sector Externo" },
+  { href: "/inflacion", label: "Inflación" },
   { href: "/historico", label: "Histórico" },
   { href: "/series", label: "Comparador" },
 ];
