@@ -13,8 +13,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAllVariables, BCRAError } from "@/lib/bcra/client";
 import { CACHE_TTL_SECONDS } from "@/lib/bcra/constants";
 
-export const dynamic = "force-static";
-export const revalidate = CACHE_TTL_SECONDS;
+export const revalidate = 3600; // 1 hora
 
 export async function GET(request: NextRequest) {
   try {
