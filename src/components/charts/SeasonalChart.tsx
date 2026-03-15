@@ -9,6 +9,7 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
+  ReferenceLine,
 } from "recharts";
 import type { DataPoint } from "@/lib/bcra/types";
 
@@ -35,7 +36,7 @@ const AVG_KEY = "Promedio";
 interface SeasonalChartProps {
   data: DataPoint[];
   color?: string; // current year line color
-  unit?: string;
+  unit?: string;  // original unit — shown in tooltip for context only
   height?: number;
   maxPastYears?: number;
 }
@@ -61,11 +62,27 @@ function buildSeasonalData(data: DataPoint[], maxPastYears: number) {
   const allYears = Array.from(yearsSet).sort();
 
   // Past years to display: up to maxPastYears most recent
-  const pastYears = allYears
-    .filter((y) => y < currentYear)
-    .slice(-maxPastYears);
+  const pastYears = allYears.filter((y) => y < currentYear).slice(-maxPastYears);
 
-  // Complete past years (at least 6 months of data) for average
+  // --- Base 100 normalization ---
+  // For each year, base = first available month's value (ideally January)
+  const yearBase = new Map<number, number>();
+  [...pastYears, currentYear].forEach((year) => {
+    for (let m = 1; m <= 12; m++) {
+      const val = byYearMonth.get(`${year}-${String(m).padStart(2, "0")}`);
+      if (val != null && val !== 0) {
+        yearBase.set(year, val);
+        break;
+      }
+    }
+  });
+
+  const normalize = (year: number, raw: number): number => {
+    const base = yearBase.get(year);
+    return base ? (raw / base) * 100 : raw;
+  };
+
+  // Complete past years (≥6 months) — used for the average line
   const completePastYears = pastYears.filter((year) => {
     let count = 0;
     for (let m = 1; m <= 12; m++) {
@@ -74,27 +91,27 @@ function buildSeasonalData(data: DataPoint[], maxPastYears: number) {
     return count >= 6;
   });
 
-  // Build chart rows: one per month
+  // Build chart rows: one per month — all values normalized to base 100
   const chartData = MONTH_NAMES.map((name, i) => {
     const m = String(i + 1).padStart(2, "0");
     const row: Record<string, number | string> = { month: name };
 
-    // Past years
+    // Past years (normalized)
     pastYears.forEach((year) => {
       const val = byYearMonth.get(`${year}-${m}`);
-      if (val != null) row[String(year)] = val;
+      if (val != null) row[String(year)] = normalize(year, val);
     });
 
-    // Current year
+    // Current year (normalized)
     const curVal = byYearMonth.get(`${currentYear}-${m}`);
-    if (curVal != null) row[String(currentYear)] = curVal;
+    if (curVal != null) row[String(currentYear)] = normalize(currentYear, curVal);
 
-    // Average across complete past years
+    // Average of normalized values across complete past years
     if (completePastYears.length > 0) {
       const vals: number[] = [];
       completePastYears.forEach((year) => {
         const val = byYearMonth.get(`${year}-${m}`);
-        if (val != null) vals.push(val);
+        if (val != null) vals.push(normalize(year, val));
       });
       if (vals.length > 0) {
         row[AVG_KEY] = vals.reduce((a, b) => a + b, 0) / vals.length;
@@ -104,15 +121,32 @@ function buildSeasonalData(data: DataPoint[], maxPastYears: number) {
     return row;
   });
 
+  // Compute Y domain with a little padding
+  const allValues: number[] = [];
+  chartData.forEach((row) => {
+    Object.entries(row).forEach(([k, v]) => {
+      if (k !== "month" && typeof v === "number") allValues.push(v);
+    });
+  });
+  const minVal = Math.min(...allValues);
+  const maxVal = Math.max(...allValues);
+  const pad = (maxVal - minVal) * 0.08 || 5;
+  const yDomain: [number, number] = [
+    Math.floor((minVal - pad) * 10) / 10,
+    Math.ceil((maxVal + pad) * 10) / 10,
+  ];
+
   return {
     chartData,
     pastYears,
     currentYear,
     completePastYears,
     hasCurrentYear: allYears.includes(currentYear),
+    yDomain,
   };
 }
 
+// ---- Tooltip -----------------------------------------------------------
 function SeasonalTooltip({
   active,
   payload,
@@ -125,6 +159,7 @@ function SeasonalTooltip({
   unit?: string;
 }) {
   if (!active || !payload?.length) return null;
+
   // Sort: current year first, then average, then past years desc
   const sorted = [...payload].sort((a, b) => {
     const aIsAvg = a.name === AVG_KEY;
@@ -138,25 +173,41 @@ function SeasonalTooltip({
   return (
     <div className="bg-slate-900 text-white px-3 py-2 rounded-lg shadow-lg text-sm min-w-[170px]">
       <div className="text-slate-400 text-xs mb-2 font-medium capitalize">{label}</div>
-      {sorted.map((p) => (
-        <div key={p.name} className="flex items-center justify-between gap-3 mb-0.5">
-          <span className="flex items-center gap-1.5 text-xs">
-            <span
-              className="w-2 h-2 rounded-full inline-block shrink-0"
-              style={{ backgroundColor: p.stroke }}
-            />
-            {p.name}
-          </span>
-          <span className="font-mono font-semibold text-xs">
-            {p.value?.toLocaleString("es-AR", { maximumFractionDigits: 2 })}
-            {unit && <span className="text-slate-400 ml-1 text-xs">{unit}</span>}
-          </span>
-        </div>
-      ))}
+      {sorted.map((p) => {
+        const delta = p.value - 100;
+        const sign = delta >= 0 ? "+" : "";
+        return (
+          <div key={p.name} className="flex items-center justify-between gap-3 mb-0.5">
+            <span className="flex items-center gap-1.5 text-xs">
+              <span
+                className="w-2 h-2 rounded-full inline-block shrink-0"
+                style={{ backgroundColor: p.stroke }}
+              />
+              {p.name}
+            </span>
+            <span className="font-mono font-semibold text-xs">
+              {p.value?.toFixed(1)}
+              {p.name !== AVG_KEY && (
+                <span
+                  className={`ml-1.5 text-xs font-normal ${
+                    delta >= 0 ? "text-emerald-400" : "text-red-400"
+                  }`}
+                >
+                  ({sign}{delta.toFixed(1)}%)
+                </span>
+              )}
+            </span>
+          </div>
+        );
+      })}
+      <div className="mt-2 pt-1.5 border-t border-slate-700 text-xs text-slate-500">
+        Base 100 = ene · {unit && <span>{unit}</span>}
+      </div>
     </div>
   );
 }
 
+// ---- Component ---------------------------------------------------------
 export function SeasonalChart({
   data,
   color = "#3b5bdb",
@@ -175,7 +226,7 @@ export function SeasonalChart({
     );
   }
 
-  const { chartData, pastYears, currentYear, completePastYears, hasCurrentYear } =
+  const { chartData, pastYears, currentYear, completePastYears, hasCurrentYear, yDomain } =
     buildSeasonalData(data, maxPastYears);
 
   return (
@@ -186,6 +237,13 @@ export function SeasonalChart({
           stroke="var(--color-border, #e2e8f0)"
           vertical={false}
         />
+        {/* Base-100 reference line */}
+        <ReferenceLine
+          y={100}
+          stroke="var(--color-border, #e2e8f0)"
+          strokeWidth={1.5}
+          strokeDasharray="4 3"
+        />
         <XAxis
           dataKey="month"
           tick={{ fontSize: 11, fill: "#94a3b8" }}
@@ -193,24 +251,17 @@ export function SeasonalChart({
           tickLine={false}
         />
         <YAxis
+          domain={yDomain}
           tick={{ fontSize: 11, fill: "#94a3b8" }}
           axisLine={false}
           tickLine={false}
-          width={60}
-          tickFormatter={(v: number) =>
-            v >= 1_000_000
-              ? (v / 1_000_000).toFixed(1) + "M"
-              : v >= 1_000
-              ? (v / 1_000).toFixed(0) + "K"
-              : v.toLocaleString("es-AR", { maximumFractionDigits: 2 })
-          }
+          width={52}
+          tickFormatter={(v: number) => v.toFixed(0)}
         />
         <Tooltip content={<SeasonalTooltip unit={unit} />} />
-        <Legend
-          wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }}
-        />
+        <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />
 
-        {/* Average line: bold dashed, drawn first so it's behind other lines */}
+        {/* Average line: bold dashed, drawn first (behind) */}
         {completePastYears.length > 1 && (
           <Line
             type="monotone"
@@ -223,9 +274,8 @@ export function SeasonalChart({
           />
         )}
 
-        {/* Past years: light, thin, ordered oldest→newest */}
+        {/* Past years: light, thin, oldest→newest */}
         {pastYears.map((year, i) => {
-          // Most-recent past year gets PAST_YEAR_COLORS[0], oldest gets higher index
           const colorIndex = pastYears.length - 1 - i;
           const lineColor = PAST_YEAR_COLORS[colorIndex] ?? "#94a3b8";
           return (
