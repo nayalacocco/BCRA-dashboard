@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   description: "Compará múltiples series del BCRA y calculá ratios entre variables",
 };
 
-export const revalidate = 3600;
+export const revalidate = 1800; // ISR: revalidar cada 30 minutos
 
 export default async function SeriesPage() {
   try {

@@ -11,6 +11,18 @@ export function formatDate(isoDate: string): string {
   return `${day}/${month}/${year}`;
 }
 
+/** Formatea un objeto Date a "DD/MM/YYYY HH:mm" en timezone de Argentina */
+export function formatDateTime(date: Date): string {
+  return date.toLocaleString("es-AR", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /** Formatea una fecha "YYYY-MM-DD" a "MMM YY" (para ejes de gráficos) */
 export function formatDateShort(isoDate: string): string {
   if (!isoDate) return "";

@@ -6,14 +6,14 @@ import { KPICard } from "@/components/dashboard/KPICard";
 import { HistoricalChart } from "@/components/charts/HistoricalChart";
 import { CardSkeleton, ChartSkeleton } from "@/components/ui/LoadingState";
 import { ErrorState } from "@/components/ui/ErrorState";
-import { formatDate } from "@/lib/bcra/format";
+import { formatDate, formatDateTime } from "@/lib/bcra/format";
 
 export const metadata: Metadata = {
   title: "Dashboard",
   description: "Indicadores económicos principales del BCRA",
 };
 
-export const revalidate = 3600; // ISR: revalidar cada hora
+export const revalidate = 1800; // ISR: revalidar cada 30 minutos
 
 // ---- Server component que trae todos los datos ----
 
@@ -48,8 +48,9 @@ async function DashboardContent() {
       }
     });
 
-    // Última actualización
+    // Última actualización del BCRA + momento de generación de la página
     const lastUpdate = dashboardVars[0]?.ultFechaInformada;
+    const pageGeneratedAt = formatDateTime(new Date());
 
     // Histórico extendido de USD Mayorista (90 días) para el chart principal
     const ninetyDaysAgo = new Date(today);
@@ -76,12 +77,17 @@ async function DashboardContent() {
                 Principales variables monetarias y cambiarias
               </p>
             </div>
-            {lastUpdate && (
-              <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-lg text-sm">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                Actualizado: {formatDate(lastUpdate)}
+            <div className="flex flex-col items-end gap-1">
+              {lastUpdate && (
+                <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-lg text-sm">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  Datos al: {formatDate(lastUpdate)}
+                </div>
+              )}
+              <div className="text-xs text-slate-400">
+                Última actualización: {pageGeneratedAt} ART
               </div>
-            )}
+            </div>
           </div>
         </div>
 
@@ -144,7 +150,7 @@ async function DashboardContent() {
           <p>
             <span className="font-semibold text-slate-700">Fuente:</span>{" "}
             API oficial del BCRA — Principales Variables v4.0.
-            Los datos se actualizan automáticamente cada hora (ISR). Para actualización
+            Los datos se actualizan automáticamente cada 30 minutos (ISR). Para actualización
             forzada usá el endpoint{" "}
             <code className="bg-slate-200 px-1 rounded text-xs font-mono">
               /api/cron/revalidate

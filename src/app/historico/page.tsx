@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   description: "Serie histórica filtrable de variables del BCRA con exportación CSV",
 };
 
-export const revalidate = 3600;
+export const revalidate = 1800; // ISR: revalidar cada 30 minutos
 
 export default async function HistoricoPage() {
   try {
