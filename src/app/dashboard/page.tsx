@@ -5,6 +5,7 @@ import { EXTENDED_DASHBOARD_IDS } from "@/lib/bcra/constants";
 import { DashboardClient, type HistoricPoint } from "./DashboardClient";
 import { ChartSkeleton } from "@/components/ui/LoadingState";
 import { formatDateTime } from "@/lib/bcra/format";
+import { saveToKV, loadFromKV } from "@/lib/bcra/kv-cache";
 
 export const metadata: Metadata = {
   title: "Dashboard",
@@ -66,6 +67,9 @@ async function DashboardContent() {
       allVariables.find((v) => v.idVariable === 1)?.ultFechaInformada ??
       allVariables[0]?.ultFechaInformada;
 
+    // Persist snapshot to KV so we have a fallback if the API goes down later
+    await saveToKV({ latestValues, historicData, lastBCRAUpdate });
+
     return (
       <DashboardClient
         latestValues={latestValues}
@@ -75,9 +79,24 @@ async function DashboardContent() {
       />
     );
   } catch (error) {
-    console.error("[Dashboard]", error);
-    // Don't cache a static error page via ISR.
-    // Let DashboardClient recover on the client via localStorage + auto-retry.
+    console.error("[Dashboard] BCRA API error:", error);
+
+    // Try to serve last known-good snapshot from KV
+    const cached = await loadFromKV();
+    if (cached) {
+      console.log("[Dashboard] Serving KV cache from", cached.savedAt);
+      return (
+        <DashboardClient
+          latestValues={cached.latestValues as Record<number, { valor: number; fecha: string } | null>}
+          historicData={cached.historicData as Record<number, HistoricPoint[]>}
+          pageGeneratedAt={cached.savedAt}
+          lastBCRAUpdate={cached.lastBCRAUpdate}
+          kvCachedAt={cached.savedAt}
+        />
+      );
+    }
+
+    // No KV cache either — let client handle recovery
     return (
       <DashboardClient
         latestValues={{}}

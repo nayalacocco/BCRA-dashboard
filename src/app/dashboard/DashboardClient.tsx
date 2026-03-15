@@ -25,8 +25,10 @@ export interface DashboardClientProps {
   historicData: Record<number, HistoricPoint[]>;
   pageGeneratedAt: string | null;
   lastBCRAUpdate?: string;
-  /** true when server-side fetch failed — triggers client-side fallback */
+  /** true when server-side fetch failed AND no KV cache — triggers client-side fallback */
   initialFetchFailed?: boolean;
+  /** ISO timestamp: set when data comes from KV cache because BCRA API was down */
+  kvCachedAt?: string;
 }
 
 // IDs fetched by the dashboard
@@ -125,6 +127,7 @@ export function DashboardClient({
   pageGeneratedAt: serverGeneratedAt,
   lastBCRAUpdate: serverLastBCRAUpdate,
   initialFetchFailed = false,
+  kvCachedAt,
 }: DashboardClientProps) {
   const hasServerData = Object.keys(serverLatestValues).length > 0;
 
@@ -135,6 +138,8 @@ export function DashboardClient({
   const [dataStatus, setDataStatus] = useState<DataStatus>(
     !initialFetchFailed && hasServerData ? "ok" : "error"
   );
+  // kvCachedAt: server has data from KV but BCRA API was down
+  const isKVStale = Boolean(kvCachedAt);
   const [retryIn, setRetryIn] = useState(0);
   const [cachedAt, setCachedAt] = useState<string | null>(null);
 
@@ -304,6 +309,22 @@ export function DashboardClient({
   return (
     <div className="space-y-10">
       {/* ---- STATUS BANNERS ---- */}
+      {/* KV cache banner: server served stale data because BCRA API was down */}
+      {isKVStale && (
+        <div className="flex items-center gap-2 px-3 py-2.5 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg text-sm text-orange-700 dark:text-orange-400">
+          <span className="text-base">📡</span>
+          <span>
+            <strong>API del BCRA no disponible.</strong> Mostrando últimos datos del{" "}
+            <strong>
+              {new Date(kvCachedAt!).toLocaleString("es-AR", {
+                day: "2-digit", month: "2-digit", year: "numeric",
+                hour: "2-digit", minute: "2-digit",
+              })}
+            </strong>.
+            La página se actualizará automáticamente cuando la API vuelva.
+          </span>
+        </div>
+      )}
       {dataStatus === "stale" && (
         <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-sm text-amber-700 dark:text-amber-400">
           <span>⚠️</span>
