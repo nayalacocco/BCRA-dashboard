@@ -231,7 +231,7 @@ export function SeasonalChart({
 
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <LineChart data={chartData} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
+      <LineChart data={chartData} margin={{ top: 8, right: 16, left: 20, bottom: 8 }}>
         <CartesianGrid
           strokeDasharray="3 3"
           stroke="var(--color-border, #e2e8f0)"
@@ -256,7 +256,14 @@ export function SeasonalChart({
           axisLine={false}
           tickLine={false}
           width={52}
-          tickFormatter={(v: number) => v.toFixed(0)}
+          tickFormatter={(v: number) => `${v.toFixed(0)}`}
+          label={{
+            value: "ene=100",
+            angle: -90,
+            position: "insideLeft",
+            offset: 14,
+            style: { fill: "#64748b", fontSize: 10, fontFamily: "monospace" },
+          }}
         />
         <Tooltip content={<SeasonalTooltip unit={unit} />} />
         <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />
