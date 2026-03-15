@@ -6,6 +6,7 @@ import { DashboardClient, type HistoricPoint } from "./DashboardClient";
 import { ChartSkeleton } from "@/components/ui/LoadingState";
 import { formatDateTime } from "@/lib/bcra/format";
 import { saveToKV, loadFromKV } from "@/lib/bcra/kv-cache";
+import { fetchDashboardIndecData } from "@/lib/indec/client";
 
 export const metadata: Metadata = {
   title: "Dashboard",
@@ -41,12 +42,13 @@ async function DashboardContent() {
       console.warn("[Dashboard] IDs no encontrados en allVariables:", missingIds);
     }
 
-    // 2. Histórico extendido para los IDs clave (en paralelo)
-    const historicResults = await Promise.allSettled(
-      HISTORIC_IDS.map((id) =>
-        getVariableHistorico(id, { limit: 2000 })
-      )
-    );
+    // 2. Histórico extendido para los IDs clave + INDEC series (en paralelo)
+    const [historicResults, indecData] = await Promise.all([
+      Promise.allSettled(
+        HISTORIC_IDS.map((id) => getVariableHistorico(id, { limit: 2000 }))
+      ),
+      fetchDashboardIndecData(),
+    ]);
 
     const historicData: Record<number, HistoricPoint[]> = {};
     historicResults.forEach((result, index) => {
@@ -68,7 +70,7 @@ async function DashboardContent() {
       allVariables[0]?.ultFechaInformada;
 
     // Persist snapshot to KV so we have a fallback if the API goes down later
-    await saveToKV({ latestValues, historicData, lastBCRAUpdate });
+    await saveToKV({ latestValues, historicData, lastBCRAUpdate, indecData });
 
     return (
       <DashboardClient
@@ -76,6 +78,7 @@ async function DashboardContent() {
         historicData={historicData}
         pageGeneratedAt={pageGeneratedAt}
         lastBCRAUpdate={lastBCRAUpdate}
+        indecData={indecData}
       />
     );
   } catch (error) {
@@ -92,6 +95,7 @@ async function DashboardContent() {
           pageGeneratedAt={cached.savedAt}
           lastBCRAUpdate={cached.lastBCRAUpdate}
           kvCachedAt={cached.savedAt}
+          indecData={cached.indecData}
         />
       );
     }

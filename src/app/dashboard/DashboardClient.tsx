@@ -12,6 +12,7 @@ import {
 } from "@/components/dashboard/PeriodSelector";
 import { VARIABLES_CONFIG } from "@/lib/bcra/constants";
 import { formatDate } from "@/lib/bcra/format";
+import type { IndecDashboardData } from "@/lib/indec/client";
 
 // ---- Types ----
 
@@ -29,12 +30,14 @@ export interface DashboardClientProps {
   initialFetchFailed?: boolean;
   /** ISO timestamp: set when data comes from KV cache because BCRA API was down */
   kvCachedAt?: string;
+  /** INDEC/datos.gob.ar series for Sector Externo + Expectativas */
+  indecData?: IndecDashboardData;
 }
 
 // IDs fetched by the dashboard
 const DASHBOARD_IDS = [1, 5, 4, 15, 109, 78, 27, 28, 29, 7];
 const CACHE_KEY = "bcra-dashboard-v1";
-const RETRY_SECONDS = 300;
+const RETRY_MS = 5 * 60 * 1000; // retry silently every 5 min
 
 // ---- Helpers ----
 
@@ -119,15 +122,13 @@ function RatioCard({
 
 // ---- Main component ----
 
-type DataStatus = "ok" | "stale" | "fetching" | "error";
-
 export function DashboardClient({
   latestValues: serverLatestValues,
   historicData: serverHistoricData,
   pageGeneratedAt: serverGeneratedAt,
   lastBCRAUpdate: serverLastBCRAUpdate,
   initialFetchFailed = false,
-  kvCachedAt,
+  indecData,
 }: DashboardClientProps) {
   const hasServerData = Object.keys(serverLatestValues).length > 0;
 
@@ -135,25 +136,15 @@ export function DashboardClient({
   const [historicData, setHistoricData] = useState(serverHistoricData);
   const [pageGeneratedAt, setPageGeneratedAt] = useState<string | null>(serverGeneratedAt);
   const [lastBCRAUpdate, setLastBCRAUpdate] = useState<string | undefined>(serverLastBCRAUpdate);
-  const [dataStatus, setDataStatus] = useState<DataStatus>(
-    !initialFetchFailed && hasServerData ? "ok" : "error"
-  );
-  // kvCachedAt: server has data from KV but BCRA API was down
-  const isKVStale = Boolean(kvCachedAt);
-  const [retryIn, setRetryIn] = useState(0);
-  const [cachedAt, setCachedAt] = useState<string | null>(null);
 
   const fetchingRef = useRef(false);
-  const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Ref so the setInterval callback always calls the latest function instance
+  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fetchFnRef = useRef<() => Promise<void>>(async () => {});
 
   async function fetchClientData() {
     if (fetchingRef.current) return;
     fetchingRef.current = true;
-    if (retryTimerRef.current) { clearInterval(retryTimerRef.current); retryTimerRef.current = null; }
-    setRetryIn(0);
-    setDataStatus((s) => (s === "stale" ? "stale" : "fetching"));
+    if (retryRef.current) { clearTimeout(retryRef.current); retryRef.current = null; }
 
     try {
       const varsRes = await fetch(`/api/bcra/variables?ids=${DASHBOARD_IDS.join(",")}`);
@@ -190,7 +181,6 @@ export function DashboardClient({
       setHistoricData(newHist);
       setPageGeneratedAt(now);
       setLastBCRAUpdate(bcraDate);
-      setDataStatus("ok");
 
       try {
         localStorage.setItem(CACHE_KEY, JSON.stringify({
@@ -200,28 +190,20 @@ export function DashboardClient({
         }));
       } catch { /* QuotaExceededError */ }
     } catch {
-      setDataStatus((s) => (s === "stale" ? "stale" : "error"));
-      let countdown = RETRY_SECONDS;
-      setRetryIn(countdown);
-      retryTimerRef.current = setInterval(() => {
-        countdown -= 1;
-        setRetryIn(countdown);
-        if (countdown <= 0) {
-          if (retryTimerRef.current) { clearInterval(retryTimerRef.current); retryTimerRef.current = null; }
-          fetchingRef.current = false;
-          fetchFnRef.current(); // call via stable ref to avoid stale closure
-        }
-      }, 1000);
+      // Retry silently after 5 minutes
+      retryRef.current = setTimeout(() => {
+        fetchingRef.current = false;
+        fetchFnRef.current();
+      }, RETRY_MS);
     } finally {
       fetchingRef.current = false;
     }
   }
 
-  // Keep the ref in sync with the latest function instance
   fetchFnRef.current = fetchClientData;
 
   useEffect(() => {
-    // Good server data → persist to localStorage
+    // Good server data → persist to localStorage for future offline fallback
     if (!initialFetchFailed && hasServerData) {
       try {
         localStorage.setItem(CACHE_KEY, JSON.stringify({
@@ -235,7 +217,7 @@ export function DashboardClient({
       return;
     }
 
-    // Server failed → try localStorage cache first, then client fetch
+    // Server fetch failed → try localStorage cache, then retry in background
     try {
       const raw = localStorage.getItem(CACHE_KEY);
       if (raw) {
@@ -245,8 +227,6 @@ export function DashboardClient({
           setHistoricData(parsed.historicData ?? {});
           setPageGeneratedAt(parsed.pageGeneratedAt ?? null);
           setLastBCRAUpdate(parsed.lastBCRAUpdate);
-          setCachedAt(parsed.savedAt ?? null);
-          setDataStatus("stale");
         }
       }
     } catch { /* ignore */ }
@@ -254,7 +234,7 @@ export function DashboardClient({
     fetchClientData();
 
     return () => {
-      if (retryTimerRef.current) clearInterval(retryTimerRef.current);
+      if (retryRef.current) clearTimeout(retryRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -270,6 +250,13 @@ export function DashboardClient({
     return result;
   }, [historicData, period]);
 
+  // Filter INDEC data by period
+  const filteredIndec = useMemo(() => ({
+    exportCereales: filterByPeriod(indecData?.exportCereales ?? [], period),
+    balanceCereales: filterByPeriod(indecData?.balanceCereales ?? [], period),
+    inflacionEsperada: filterByPeriod(indecData?.inflacionEsperada ?? [], period),
+  }), [indecData, period]);
+
   // ---- Ratio calculations ----
   const bmReservas =
     (latestVal(latestValues, 15) ?? 0) / (latestVal(latestValues, 1) ?? 1);
@@ -277,77 +264,8 @@ export function DashboardClient({
     (latestVal(latestValues, 109) ?? 0) / (latestVal(latestValues, 1) ?? 1);
   const usdOficial = latestVal(latestValues, 5) ?? null;
 
-  // If truly no data and still erroring — show minimal retry UI
-  const hasAnyData = Object.keys(latestValues).length > 0;
-  if (!hasAnyData && (dataStatus === "error" || dataStatus === "fetching")) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-5 text-center px-4">
-        <div className="w-16 h-16 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-3xl">
-          {dataStatus === "fetching" ? (
-            <span className="animate-spin inline-block">⟳</span>
-          ) : "⚠️"}
-        </div>
-        <div>
-          <h2 className="text-xl font-bold text-slate-700 dark:text-slate-200 mb-1">
-            {dataStatus === "fetching" ? "Cargando datos…" : "No se pudieron cargar los datos"}
-          </h2>
-          <p className="text-slate-500 dark:text-slate-400 max-w-md text-sm">
-            La API del BCRA podría estar temporalmente no disponible.
-            {retryIn > 0 && ` Reintentando en ${retryIn} segundos.`}
-          </p>
-        </div>
-        <button
-          onClick={() => { fetchingRef.current = false; fetchClientData(); }}
-          className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors text-sm"
-        >
-          Reintentar ahora
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-10">
-      {/* ---- STATUS BANNERS ---- */}
-      {/* KV cache banner: server served stale data because BCRA API was down */}
-      {isKVStale && (
-        <div className="flex items-center gap-2 px-3 py-2.5 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg text-sm text-orange-700 dark:text-orange-400">
-          <span className="text-base">📡</span>
-          <span>
-            <strong>API del BCRA no disponible.</strong> Mostrando últimos datos del{" "}
-            <strong>
-              {new Date(kvCachedAt!).toLocaleString("es-AR", {
-                day: "2-digit", month: "2-digit", year: "numeric",
-                hour: "2-digit", minute: "2-digit",
-              })}
-            </strong>.
-            La página se actualizará automáticamente cuando la API vuelva.
-          </span>
-        </div>
-      )}
-      {dataStatus === "stale" && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-sm text-amber-700 dark:text-amber-400">
-          <span>⚠️</span>
-          <span>
-            Mostrando datos en caché
-            {cachedAt ? ` del ${new Date(cachedAt).toLocaleDateString("es-AR")}` : ""}.
-            La API del BCRA no está disponible temporalmente.
-            {retryIn > 0 && ` Reintentando en ${retryIn}s.`}
-          </span>
-          <button
-            onClick={() => { fetchingRef.current = false; fetchClientData(); }}
-            className="ml-auto text-xs font-semibold underline whitespace-nowrap"
-          >
-            Reintentar
-          </button>
-        </div>
-      )}
-      {dataStatus === "fetching" && hasAnyData && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm text-blue-600 dark:text-blue-400">
-          <span className="animate-spin inline-block">⟳</span>
-          <span>Actualizando datos…</span>
-        </div>
-      )}
 
       {/* ---- PAGE HEADER ---- */}
       <div className="flex items-start justify-between flex-wrap gap-4">
@@ -667,6 +585,16 @@ export function DashboardClient({
             positiveIsGood={false}
             decimals={3}
           />
+          <DeltaKPICard
+            label="Inflación Esperada 12m"
+            value={indecData?.inflacionEsperada.at(-1)?.valor ?? undefined}
+            suffix="%"
+            date={indecData?.inflacionEsperada.at(-1)?.fecha}
+            delta={getDelta(indecData?.inflacionEsperada ?? [])}
+            color="#e67700"
+            positiveIsGood={false}
+            decimals={1}
+          />
         </div>
 
         {/* Inflación chart */}
@@ -692,12 +620,16 @@ export function DashboardClient({
           BLOQUE 5: SECTOR EXTERNO
       ================================================================ */}
       <BlockSection title="Sector Externo" icon="🌎" color="green">
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-          <PendingCard
-            label="Liquidación Agro"
-            description="CIARA-CEC: sector agroexportador"
-            source="CIARA"
-            unit="M USD"
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-5">
+          <DeltaKPICard
+            label="Exportaciones Cereales"
+            value={indecData?.exportCereales.at(-1)?.valor ?? undefined}
+            suffix="M USD"
+            date={indecData?.exportCereales.at(-1)?.fecha}
+            delta={getDelta(indecData?.exportCereales ?? [])}
+            color="#2f9e44"
+            positiveIsGood={true}
+            decimals={1}
           />
           <PendingCard
             label="Importaciones"
@@ -705,11 +637,37 @@ export function DashboardClient({
             source="INDEC"
             unit="M USD"
           />
-          <PendingCard
-            label="Balance Comercial"
-            description="Exportaciones − Importaciones"
-            source="INDEC"
+          <DeltaKPICard
+            label="Balance Comercial Agro"
+            value={indecData?.balanceCereales.at(-1)?.valor ?? undefined}
+            suffix="M USD"
+            date={indecData?.balanceCereales.at(-1)?.fecha}
+            delta={getDelta(indecData?.balanceCereales ?? [])}
+            color="#087f5b"
+            positiveIsGood={true}
+            showSign={true}
+            decimals={1}
+          />
+        </div>
+
+        {/* Exportaciones chart */}
+        <div className="card card-dark p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="font-semibold text-slate-900 dark:text-slate-100">
+                Exportaciones de Cereales
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">Fuente: INDEC (datos.gob.ar)</p>
+            </div>
+            <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+              M USD
+            </span>
+          </div>
+          <HistoricalChart
+            data={filteredIndec.exportCereales}
+            color="#2f9e44"
             unit="M USD"
+            height={220}
           />
         </div>
       </BlockSection>
@@ -717,10 +675,11 @@ export function DashboardClient({
       {/* Source note */}
       <div className="p-4 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl text-sm text-slate-500 dark:text-slate-400">
         <p>
-          <span className="font-semibold text-slate-700 dark:text-slate-300">Fuente:</span>{" "}
-          API oficial del BCRA — Principales Variables v4.0. Datos con caché ISR de 30 min.{" "}
+          <span className="font-semibold text-slate-700 dark:text-slate-300">Fuentes:</span>{" "}
+          API oficial del BCRA v4.0 · INDEC vía datos.gob.ar · UTDT (Di Tella) vía datos.gob.ar.
+          Datos con caché ISR de 30 min.{" "}
           <span className="text-amber-600 dark:text-amber-500">⚠ Pendiente</span>{" "}
-          indica variables de fuentes externas (ByMA, ROFEX, INDEC, CIARA) aún no integradas.
+          indica variables de fuentes externas (ByMA, ROFEX, CIARA) aún no integradas.
         </p>
       </div>
     </div>

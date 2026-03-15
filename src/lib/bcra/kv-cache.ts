@@ -9,10 +9,13 @@
  * are no-ops so the app still works in local dev without KV configured.
  */
 
+import type { IndecDashboardData } from "@/lib/indec/client";
+
 export interface DashboardCacheData {
   latestValues: Record<number, { valor: number; fecha: string } | null>;
   historicData: Record<number, Array<{ fecha: string; valor: number }>>;
   lastBCRAUpdate?: string;
+  indecData?: IndecDashboardData;
   savedAt: string; // ISO timestamp of when this snapshot was taken
 }
 
