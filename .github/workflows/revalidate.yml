@@ -34,23 +34,26 @@ jobs:
         run: |
           echo "🔄 Iniciando revalidación de caché BCRA..."
           echo "⏰ Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "🌐 URL: ${{ secrets.VERCEL_APP_URL }}/api/cron/revalidate"
 
-          RESPONSE=$(curl -sf \
+          HTTP_RESPONSE=$(curl -s \
             -X GET \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             -H "Accept: application/json" \
             --max-time 30 \
-            "${{ secrets.VERCEL_APP_URL }}/api/cron/revalidate" \
-            2>&1)
+            --write-out "HTTPSTATUS:%{http_code}" \
+            "${{ secrets.VERCEL_APP_URL }}/api/cron/revalidate")
 
-          EXIT_CODE=$?
+          HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed -E 's/HTTPSTATUS:[0-9]+$//')
+          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tr -d '\n' | sed -E 's/.*HTTPSTATUS:([0-9]+)$/\1/')
 
-          if [ $EXIT_CODE -eq 0 ]; then
+          echo "📦 HTTP Status: $HTTP_CODE"
+          echo "📦 Respuesta: $HTTP_BODY"
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
             echo "✅ Revalidación exitosa"
-            echo "📦 Respuesta: $RESPONSE"
           else
-            echo "❌ Error en la revalidación (exit code: $EXIT_CODE)"
-            echo "📦 Respuesta: $RESPONSE"
+            echo "❌ Error en la revalidación (HTTP $HTTP_CODE)"
             exit 1
           fi
 
