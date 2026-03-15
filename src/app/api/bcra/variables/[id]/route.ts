@@ -17,11 +17,12 @@ import { CACHE_TTL_SECONDS, DEFAULT_HISTORY_LIMIT } from "@/lib/bcra/constants";
 export const revalidate = CACHE_TTL_SECONDS;
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(request: NextRequest, { params }: Params) {
-  const idVariable = parseInt(params.id, 10);
+  const { id } = await params;
+  const idVariable = parseInt(id, 10);
 
   if (isNaN(idVariable) || idVariable <= 0) {
     return NextResponse.json(
