@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.bcra.gob.ar)",
+      "WebFetch(domain:api.bcra.gob.ar)",
+      "WebSearch",
+      "WebFetch(domain:bcra-connector.readthedocs.io)",
+      "Bash(/usr/bin/curl -sk --max-time 10 https://raw.githubusercontent.com/PPeitsch/bcra-connector/main/src/bcra_connector/bcra_connector.py)"
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+const navLinks = [
+  { href: "/dashboard", label: "Dashboard" },
+  { href: "/historico", label: "Histórico" },
+  { href: "/series", label: "Comparador" },
+];
+
+export function Navbar() {
+  const pathname = usePathname();
+
+  return (
+    <header className="sticky top-0 z-50 bg-white border-b border-slate-200 shadow-sm">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between h-16">
+          {/* Logo */}
+          <Link href="/dashboard" className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-bcra-600 flex items-center justify-center">
+              <span className="text-white font-bold text-sm">B</span>
+            </div>
+            <span className="font-bold text-slate-900 text-lg hidden sm:block">
+              BCRA Dashboard
+            </span>
+          </Link>
+
+          {/* Nav links */}
+          <nav className="flex items-center gap-1">
+            {navLinks.map((link) => {
+              const isActive = pathname.startsWith(link.href);
+              return (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    isActive
+                      ? "bg-bcra-50 text-bcra-700"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+                  }`}
+                >
+                  {link.label}
+                </Link>
+              );
+            })}
+          </nav>
+
+          {/* BCRA badge */}
+          <div className="hidden sm:flex items-center gap-2">
+            <span className="text-xs text-slate-400 bg-slate-100 px-2 py-1 rounded-md font-mono">
+              API v4.0
+            </span>
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+}

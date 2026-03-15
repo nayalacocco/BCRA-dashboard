@@ -1,0 +1,61 @@
+name: BCRA Data Revalidation
+
+# Actualiza los datos del BCRA dos veces al día:
+# - 20:30 ART = 23:30 UTC (datos del cierre)
+# - 01:00 ART = 04:00 UTC (verificación nocturna)
+#
+# Variables de entorno requeridas en GitHub Secrets:
+#   VERCEL_APP_URL  — ej: https://bcra-dashboard.vercel.app
+#   CRON_SECRET     — mismo valor que en .env.local
+
+on:
+  schedule:
+    # Cierre: 20:30 ART (23:30 UTC)
+    - cron: "30 23 * * *"
+    # Verificación nocturna: 01:00 ART (04:00 UTC)
+    - cron: "0 4 * * *"
+
+  # Permitir ejecución manual desde GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Razón de la revalidación manual"
+        required: false
+        default: "Manual trigger"
+
+jobs:
+  revalidate:
+    name: Revalidar caché BCRA
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Revalidar datos del BCRA
+        run: |
+          echo "🔄 Iniciando revalidación de caché BCRA..."
+          echo "⏰ Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+
+          RESPONSE=$(curl -sf \
+            -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Accept: application/json" \
+            --max-time 30 \
+            "${{ secrets.VERCEL_APP_URL }}/api/cron/revalidate" \
+            2>&1)
+
+          EXIT_CODE=$?
+
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ Revalidación exitosa"
+            echo "📦 Respuesta: $RESPONSE"
+          else
+            echo "❌ Error en la revalidación (exit code: $EXIT_CODE)"
+            echo "📦 Respuesta: $RESPONSE"
+            exit 1
+          fi
+
+      - name: Notificar resultado
+        if: always()
+        run: |
+          echo "🏦 BCRA Dashboard — Revalidación completada"
+          echo "📅 Fecha: $(TZ='America/Argentina/Buenos_Aires' date '+%d/%m/%Y %H:%M') ART"
