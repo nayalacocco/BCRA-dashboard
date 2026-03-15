@@ -39,6 +39,7 @@ jobs:
           HTTP_RESPONSE=$(curl -s \
             -X GET \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "x-vercel-protection-bypass: ${{ secrets.VERCEL_BYPASS_SECRET }}" \
             -H "Accept: application/json" \
             --max-time 30 \
             --write-out "HTTPSTATUS:%{http_code}" \
