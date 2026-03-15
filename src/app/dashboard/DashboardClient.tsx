@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect, useRef } from "react";
+import Link from "next/link";
 import { HistoricalChart } from "@/components/charts/HistoricalChart";
 import { DeltaKPICard } from "@/components/dashboard/DeltaKPICard";
 import { PendingCard } from "@/components/dashboard/PendingCard";
@@ -620,6 +621,14 @@ export function DashboardClient({
           BLOQUE 5: SECTOR EXTERNO
       ================================================================ */}
       <BlockSection title="Sector Externo" icon="🌎" color="green">
+        <div className="flex justify-end mb-3">
+          <Link
+            href="/sector-externo"
+            className="text-xs font-medium text-green-700 dark:text-green-400 hover:underline flex items-center gap-1"
+          >
+            Ver análisis completo →
+          </Link>
+        </div>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-5">
           <DeltaKPICard
             label="Exportaciones Cereales"
