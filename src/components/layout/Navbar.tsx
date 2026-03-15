@@ -8,6 +8,7 @@ const navLinks = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/sector-externo", label: "Sector Externo" },
   { href: "/inflacion", label: "Inflación" },
+  { href: "/mercado", label: "Mercado" },
   { href: "/historico", label: "Histórico" },
   { href: "/series", label: "Comparador" },
 ];

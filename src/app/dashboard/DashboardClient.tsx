@@ -460,6 +460,14 @@ export function DashboardClient({
           BLOQUE 3: CAMBIARIO
       ================================================================ */}
       <BlockSection title="Cambiario" icon="💱" color="blue">
+        <div className="flex justify-end mb-3">
+          <Link
+            href="/mercado"
+            className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline flex items-center gap-1"
+          >
+            Ver mercado completo →
+          </Link>
+        </div>
         {/* KPIs */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
           <DeltaKPICard
