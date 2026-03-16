@@ -26,6 +26,7 @@ export interface MAEQuote {
   plazo: string;
   moneda: string;
   volumenAcumulado: number;
+  montoAcumulado:   number;   // nominal ARS traded
   precioUltimo: number;
   ultimaTasa: number;
   precioCierre: number | null;

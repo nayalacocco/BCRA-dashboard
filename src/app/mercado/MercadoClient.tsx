@@ -32,6 +32,7 @@ import {
 import { fetchDolarSnapshot, brecha } from "@/lib/dolar/client";
 import type { DolarSnapshot } from "@/lib/dolar/client";
 import type { BymaData, BymaQuote } from "@/lib/byma/client";
+import type { MercadoData as MAEData, MAEQuote } from "@/lib/mae/mercado";
 import { getONSpec } from "@/lib/byma/on-specs";
 import type { ONSpec } from "@/lib/byma/on-specs";
 
@@ -879,6 +880,7 @@ export function MercadoClient() {
   const [fx, setFx]               = useState<DolarSnapshot | null>(null);
   const [tasas, setTasas]         = useState<TasasData | null>(null);
   const [byma, setByma]           = useState<BymaData | null>(null);
+  const [mae, setMae]             = useState<MAEData | null>(null);
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState<string | null>(null);
   const [period, setPeriod]       = useState<Period>("6m");
@@ -891,10 +893,18 @@ export function MercadoClient() {
       fetchDolarSnapshot(),
       fetchTasas(),
       fetchByma(),
-    ]).then(([fxRes, tasasRes, bymaRes]) => {
+      fetch("/api/mae/mercado").then((r) => {
+        if (!r.ok) throw new Error(`MAE HTTP ${r.status}`);
+        return r.json().then((j: { data: MAEData | null; error: string | null }) => {
+          if (!j.data) throw new Error(j.error ?? "MAE sin datos");
+          return j.data;
+        });
+      }),
+    ]).then(([fxRes, tasasRes, bymaRes, maeRes]) => {
       if (fxRes.status   === "fulfilled") setFx(fxRes.value);
       if (tasasRes.status === "fulfilled") setTasas(tasasRes.value);
       if (bymaRes.status  === "fulfilled") setByma(bymaRes.value);
+      if (maeRes.status   === "fulfilled") setMae(maeRes.value as MAEData);
       if (fxRes.status === "rejected" && tasasRes.status === "rejected" && bymaRes.status === "rejected") {
         setError("No se pudieron cargar datos de ninguna fuente.");
       }
@@ -1265,15 +1275,119 @@ export function MercadoClient() {
       )}
 
       {/* ================================================================
-          REPOS MAE / CAUCIONES — pendiente habilitación
+          REPOS MAE / CAUCIONES
       ================================================================ */}
       <BlockSection title="Repos MAE & Cauciones" icon="💴" color="violet">
-        <MAEPendingNotice />
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {["Repo Overnight", "Repo 3 días", "Caución 1d", "Caución 7d"].map((l) => (
-            <PendingCard key={l} label={l} description="Pendiente habilitación MAE/A3" source="MAE" unit="% TNA" />
-          ))}
-        </div>
+        {mae ? (
+          <div className="space-y-6">
+            {/* ── Repo KPI cards ─────────────────────────────────────────── */}
+            {(() => {
+              const repoToday = mae.repoLatestCurve;
+              const on  = repoToday.find((r) => r.plazo === "001" || r.plazo === "1");
+              const td  = repoToday.find((r) => r.plazo === "003" || r.plazo === "3");
+              const sd  = repoToday.find((r) => r.plazo === "007" || r.plazo === "7");
+              const cau = mae.cauciones[0];
+              const mkCards = (label: string, tasa: number | undefined, vol?: number) => (
+                <div className="card card-dark p-4">
+                  <p className="text-[11px] text-slate-500 uppercase tracking-wide mb-1">{label}</p>
+                  {tasa != null ? (
+                    <>
+                      <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">{tasa.toFixed(2)}<span className="text-sm ml-1 text-slate-400">%</span></p>
+                      {vol != null && <p className="text-xs text-slate-500 mt-0.5">Vol: {(vol / 1e12).toFixed(2)} B ARS</p>}
+                    </>
+                  ) : (
+                    <p className="text-sm text-slate-400">Sin operaciones</p>
+                  )}
+                  <p className="text-[10px] text-slate-500 mt-1">TNA · MAE</p>
+                </div>
+              );
+              return (
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  {mkCards("Repo Overnight", on?.tasa, on?.vol)}
+                  {mkCards("Repo 3 días",    td?.tasa, td?.vol)}
+                  {mkCards("Repo 7 días",    sd?.tasa, sd?.vol)}
+                  {mkCards("Caución USD 1d", cau ? cau.ultimaTasa : undefined)}
+                </div>
+              );
+            })()}
+
+            {/* ── Renta fija MAE ─────────────────────────────────────────── */}
+            {mae.rentafija.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">
+                  Renta Fija MAE ({mae.rentafija.length} instrumentos hoy)
+                </p>
+                <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 border-b border-slate-200 dark:border-slate-700">
+                        <th className="text-left px-4 py-2.5 font-medium">Ticker</th>
+                        <th className="text-left px-3 py-2.5 font-medium hidden sm:table-cell">Descripción</th>
+                        <th className="text-right px-3 py-2.5 font-medium">Precio</th>
+                        <th className="text-right px-3 py-2.5 font-medium hidden sm:table-cell">Var%</th>
+                        <th className="text-right px-4 py-2.5 font-medium">Monto</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* deduplicate by ticker (MAE lists BT+GT segments) */}
+                      {Array.from(
+                        mae.rentafija
+                          .reduce((m, q) => {
+                            const prev = m.get(q.ticker);
+                            if (!prev || q.montoAcumulado > (prev as MAEQuote).montoAcumulado) m.set(q.ticker, q);
+                            return m;
+                          }, new Map<string, MAEQuote>())
+                          .values()
+                      )
+                        .sort((a, b) => (b as MAEQuote).montoAcumulado - (a as MAEQuote).montoAcumulado)
+                        .slice(0, 20)
+                        .map((q) => {
+                          const mq = q as MAEQuote;
+                          const isUp   = mq.variacion > 0;
+                          const isDown = mq.variacion < 0;
+                          return (
+                            <tr key={mq.ticker + mq.plazo} className="border-b border-slate-50 dark:border-slate-800/60 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                              <td className="px-4 py-2 font-mono font-semibold text-slate-900 dark:text-slate-100">{mq.ticker}</td>
+                              <td className="px-3 py-2 text-slate-500 hidden sm:table-cell max-w-[200px] truncate">{mq.descripcion.replace(mq.ticker, "").replace(/^\s*\(/, "").replace(/\)\s*$/, "").trim()}</td>
+                              <td className="px-3 py-2 text-right tabular-nums font-medium text-slate-900 dark:text-slate-100">{mq.precioUltimo > 0 ? mq.precioUltimo.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) : "—"}</td>
+                              <td className={`px-3 py-2 text-right tabular-nums hidden sm:table-cell font-medium ${isUp ? "text-emerald-500" : isDown ? "text-red-500" : "text-slate-400"}`}>
+                                {mq.variacion !== 0 ? `${mq.variacion > 0 ? "+" : ""}${mq.variacion.toFixed(2)}%` : "—"}
+                              </td>
+                              <td className="px-4 py-2 text-right tabular-nums text-slate-500">
+                                {mq.montoAcumulado >= 1e9
+                                  ? `${(mq.montoAcumulado / 1e9).toFixed(1)} B`
+                                  : mq.montoAcumulado >= 1e6
+                                  ? `${(mq.montoAcumulado / 1e6).toFixed(0)} M`
+                                  : mq.montoAcumulado > 0
+                                  ? `${mq.montoAcumulado.toLocaleString("es-AR")}`
+                                  : "—"}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1.5">Fuente: MAE · Mercado Abierto Electrónico. Top 20 por monto. Segmento bilateral + garantizado.</p>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* MAE key not set in Vercel yet */
+          <div className="space-y-4">
+            <div className="rounded-xl border border-amber-200 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/10 px-4 py-3">
+              <p className="text-sm font-medium text-amber-700 dark:text-amber-400">Configurar MAE_API_KEY en Vercel</p>
+              <p className="text-xs text-amber-600 dark:text-amber-500 mt-0.5">
+                Ir a Vercel → Settings → Environment Variables → agregar <code className="bg-amber-100 dark:bg-amber-900/40 px-1 rounded">MAE_API_KEY</code> con el valor de la key de MAE.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              {["Repo Overnight", "Repo 3 días", "Repo 7 días", "Caución USD 1d"].map((l) => (
+                <PendingCard key={l} label={l} description="Requiere MAE_API_KEY en Vercel" source="MAE" unit="% TNA" />
+              ))}
+            </div>
+          </div>
+        )}
       </BlockSection>
     </div>
   );
