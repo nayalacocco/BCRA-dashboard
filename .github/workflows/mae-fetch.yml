@@ -1,0 +1,50 @@
+name: MAE Data Fetch
+
+on:
+  schedule:
+    # Every 15 min, Mon–Fri, 13:00–21:00 UTC  (= 10:00–18:00 ART, covers full MAE session)
+    - cron: "0,15,30,45 13-21 * * 1-5"
+  workflow_dispatch: # Manual trigger for testing / back-fill
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          # Use default GITHUB_TOKEN — has write access on same repo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests --quiet
+
+      - name: Fetch MAE data
+        env:
+          MAE_API_KEY: ${{ secrets.MAE_API_KEY }}
+        run: python scripts/fetch-mae.py
+
+      - name: Commit and push snapshot
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/data/mae-snapshot.json
+          if git diff --cached --quiet; then
+            echo "No changes — snapshot unchanged"
+          else
+            TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+            git commit -m "chore(data): MAE snapshot ${TIMESTAMP} [skip vercel]"
+            # Push with rebase fallback to handle rare concurrent runs
+            git push || (git pull --rebase && git push)
+          fi

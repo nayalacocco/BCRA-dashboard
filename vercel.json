@@ -4,6 +4,7 @@
   "devCommand": "npm run dev",
   "installCommand": "npm install",
   "regions": ["gru1"],
+  "ignoreCommand": "git log -1 --pretty=%B | grep -q '\\[skip vercel\\]'",
   "headers": [
     {
       "source": "/api/(.*)",

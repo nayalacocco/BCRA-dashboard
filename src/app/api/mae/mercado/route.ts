@@ -1,172 +1,134 @@
 /**
  * GET /api/mae/mercado
  *
- * Runs on Vercel Edge Runtime (Cloudflare network) to bypass MAE's IP blocklist
- * which blocks Vercel's standard serverless (AWS Lambda) IPs.
+ * Reads MAE market data from a pre-fetched GitHub raw snapshot.
  *
- * Returns { data: MercadoData, error: null } on success
- *      or { data: null, error: string, diagnostics } on failure.
+ * Architecture (why GitHub Actions instead of fetching MAE directly):
+ *   MAE's api.mae.com.ar is protected by Incapsula WAF which blocks all
+ *   cloud-provider IP ranges (Vercel/Cloudflare Edge, AWS Lambda).
+ *   The API key works fine from residential / GitHub Actions IPs.
+ *
+ *   Solution: .github/workflows/mae-fetch.yml runs every 15 min during market
+ *   hours on GitHub-hosted runners → commits public/data/mae-snapshot.json
+ *   with "[skip vercel]" → this route reads the snapshot from GitHub raw.
+ *
+ * Returns { data: MercadoData, error: null, fetchedAt: string } on success
+ *      or { data: null, error: string } on failure.
  */
 
 import { NextResponse } from "next/server";
-import type { MercadoData, SeriesPoint, MAEQuote, RepoTermPoint } from "@/lib/mae/mercado";
+import type {
+  MercadoData,
+  SeriesPoint,
+  RepoTermPoint,
+  MAEQuote,
+} from "@/lib/mae/mercado";
 
 export const runtime = "edge";
-export const dynamic = "force-dynamic";
+export const dynamic  = "force-dynamic";
 
-const BASE = "https://api.mae.com.ar/MarketData/v1";
+// ── Snapshot URL (GitHub raw, branch=main) ────────────────────────────────────
+const SNAPSHOT_URL =
+  "https://raw.githubusercontent.com/nayalacocco/BCRA-dashboard/main/public/data/mae-snapshot.json";
 
-// ---- helpers ----
+// ── Snapshot shape (as written by scripts/fetch-mae.py) ──────────────────────
 
-function toISO(d: Date) {
-  return d.toISOString().split("T")[0];
+interface PlazoData {
+  tasa: number;
+  vol:  number;
+  ops:  number;
 }
 
-function getKey(): string | null {
-  return process.env.MAE_API_KEY ?? null;
+interface RepoDayEntry {
+  fecha:  string;
+  plazos: Record<string, PlazoData>;
 }
 
-async function maeGet(path: string, params: Record<string, string | number>, key: string) {
-  const url = new URL(`${BASE}${path}`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-
-  const res = await fetch(url.toString(), {
-    headers: {
-      "x-api-key": key,
-      "Accept": "application/json",
-    },
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`HTTP ${res.status} — ${text.slice(0, 200)}`);
-  }
-
-  return res.json();
+interface MAESnapshot {
+  fetchedAt:   string | null;
+  repoHistory: RepoDayEntry[];
+  cauciones:   MAEQuote[];
+  rentafija:   MAEQuote[];
+  forex:       MAEQuote[];
+  latestCurve: RepoTermPoint[];
 }
 
-// ---- repo pagination (max 6 pages = ~3 months on Edge, timeout is 30s) ----
+// ── Convert snapshot → MercadoData (the type the rest of the app uses) ────────
 
-interface RawRepo {
-  fecha: string;
-  plazo: string;
-  tasaPP: number;
-  volumen: number;
-  cantOperaciones: number;
-  [k: string]: unknown;
-}
+function snapshotToMercadoData(snap: MAESnapshot): MercadoData {
+  const repoOvernight: SeriesPoint[] = [];
+  const repo3d:        SeriesPoint[] = [];
+  const repo7d:        SeriesPoint[] = [];
+  const repoVolume:    SeriesPoint[] = [];
 
-async function fetchAllRepos(key: string, months = 6): Promise<RawRepo[]> {
-  const desde = new Date();
-  desde.setMonth(desde.getMonth() - months);
-  const hasta = new Date();
-
-  const all: RawRepo[] = [];
-  for (let page = 1; page <= 6; page++) {
-    const batch = await maeGet(
-      "/mercado/cotizaciones/repo",
-      { fechaDesde: toISO(desde), fechaHasta: toISO(hasta), pageNumber: page },
-      key,
-    ) as RawRepo[];
-
-    if (!Array.isArray(batch) || batch.length === 0) break;
-    all.push(...batch);
-    if (batch.length < 50) break;
-  }
-  return all;
-}
-
-function buildRepoSeries(records: RawRepo[]) {
-  const byDatePlazo = new Map<string, Map<string, RawRepo>>();
-  for (const r of records) {
-    const fecha = r.fecha.slice(0, 10);
-    if (!byDatePlazo.has(fecha)) byDatePlazo.set(fecha, new Map());
-    byDatePlazo.get(fecha)!.set(r.plazo, r);
-  }
-
-  const dates = Array.from(byDatePlazo.keys()).sort();
-
-  const overnight: SeriesPoint[] = [];
-  const three_day: SeriesPoint[] = [];
-  const seven_day: SeriesPoint[] = [];
-  const volume:    SeriesPoint[] = [];
-
-  for (const fecha of dates) {
-    const day = byDatePlazo.get(fecha)!;
-    const on = day.get("001") ?? day.get("1");
+  for (const day of snap.repoHistory) {
+    const on  = day.plazos["001"];
+    const td  = day.plazos["003"];
+    const sd  = day.plazos["007"];
     if (on) {
-      overnight.push({ fecha, valor: on.tasaPP });
-      volume.push({ fecha, valor: Math.round(on.volumen / 1e9) });
+      repoOvernight.push({ fecha: day.fecha, valor: on.tasa });
+      repoVolume.push({ fecha: day.fecha, valor: Math.round(on.vol / 1e9) }); // → ARS billions
     }
-    const td = day.get("003") ?? day.get("3");
-    if (td) three_day.push({ fecha, valor: td.tasaPP });
-    const sd = day.get("007") ?? day.get("7");
-    if (sd) seven_day.push({ fecha, valor: sd.tasaPP });
+    if (td) repo3d.push({ fecha: day.fecha, valor: td.tasa });
+    if (sd) repo7d.push({ fecha: day.fecha, valor: sd.tasa });
   }
 
-  const latestDate = dates[dates.length - 1];
-  const latestDay  = byDatePlazo.get(latestDate) ?? new Map();
-  const latestCurve: RepoTermPoint[] = Array.from(latestDay.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([plazo, r]) => ({ plazo, tasa: r.tasaPP, vol: r.volumen, ops: r.cantOperaciones }));
-
-  return { overnight, three_day, seven_day, volume, latestCurve };
+  return {
+    repoOvernight,
+    repo3d,
+    repo7d,
+    repoVolume,
+    repoLatestCurve: snap.latestCurve ?? [],
+    cauciones:       snap.cauciones   ?? [],
+    rentafija:       snap.rentafija   ?? [],
+    forex:           snap.forex       ?? [],
+    lastRepoDate:    repoOvernight.at(-1)?.fecha ?? null,
+    marketOpen:      (snap.cauciones?.length ?? 0) > 0
+                  || (snap.rentafija?.length ?? 0) > 0
+                  || (snap.forex?.length     ?? 0) > 0,
+  };
 }
 
-// ---- main handler ----
+// ── Handler ───────────────────────────────────────────────────────────────────
 
 export async function GET() {
-  const key = getKey();
-  if (!key) {
-    return NextResponse.json(
-      { data: null, error: "MAE_API_KEY not set in environment variables", diagnostics: null },
-      { status: 500 },
-    );
+  // Fetch pre-built snapshot from GitHub raw
+  let snap: MAESnapshot | null = null;
+  let fetchError: string | null = null;
+
+  try {
+    const res = await fetch(SNAPSHOT_URL, {
+      // Edge runtime: no-store so we always get the latest committed file
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+
+    if (!res.ok) {
+      throw new Error(`GitHub raw responded with HTTP ${res.status}`);
+    }
+
+    snap = (await res.json()) as MAESnapshot;
+  } catch (err) {
+    fetchError = err instanceof Error ? err.message : String(err);
+    console.error("[MAE/mercado] snapshot fetch failed:", fetchError);
   }
 
-  // Fetch repo history + today's snapshots in parallel
-  const [repoResult, caucionesResult, rentafijaResult, forexResult] = await Promise.allSettled([
-    fetchAllRepos(key, 6),
-    maeGet("/mercado/cotizaciones/cauciones", { pageNumber: 1 }, key) as Promise<MAEQuote[]>,
-    maeGet("/mercado/cotizaciones/rentafija", { pageNumber: 1 }, key) as Promise<MAEQuote[]>,
-    maeGet("/mercado/cotizaciones/forex",     { pageNumber: 1 }, key) as Promise<MAEQuote[]>,
-  ]);
-
-  // Log errors for Vercel log tail
-  if (repoResult.status      === "rejected") console.error("[MAE] repo:",      repoResult.reason);
-  if (caucionesResult.status === "rejected") console.error("[MAE] cauciones:", caucionesResult.reason);
-  if (rentafijaResult.status === "rejected") console.error("[MAE] rentafija:", rentafijaResult.reason);
-  if (forexResult.status     === "rejected") console.error("[MAE] forex:",     forexResult.reason);
-
-  const rawRepo   = repoResult.status       === "fulfilled" ? repoResult.value       : [];
-  const cauciones = caucionesResult.status  === "fulfilled" ? (caucionesResult.value as MAEQuote[]) : [];
-  const rentafija = rentafijaResult.status  === "fulfilled" ? (rentafijaResult.value as MAEQuote[]) : [];
-  const forex     = forexResult.status      === "fulfilled" ? (forexResult.value     as MAEQuote[]) : [];
-
-  // If repo is completely empty and all snapshots failed, return the error
-  if (rawRepo.length === 0 && repoResult.status === "rejected") {
-    const err = repoResult.reason instanceof Error ? repoResult.reason.message : String(repoResult.reason);
+  if (!snap) {
     return NextResponse.json(
-      { data: null, error: err, diagnostics: { keyPresent: true, repoError: err } },
+      {
+        data: null,
+        error: `No se pudo obtener el snapshot MAE: ${fetchError}`,
+        diagnostics: { snapshotUrl: SNAPSHOT_URL, fetchError },
+      },
       { status: 502 },
     );
   }
 
-  const { overnight, three_day, seven_day, volume, latestCurve } = buildRepoSeries(rawRepo);
+  const data = snapshotToMercadoData(snap);
 
-  const data: MercadoData = {
-    repoOvernight:   overnight,
-    repo3d:          three_day,
-    repo7d:          seven_day,
-    repoVolume:      volume,
-    repoLatestCurve: latestCurve,
-    cauciones,
-    rentafija,
-    forex,
-    lastRepoDate:    overnight.at(-1)?.fecha ?? null,
-    marketOpen:      cauciones.length > 0 || rentafija.length > 0 || forex.length > 0,
-  };
-
-  return NextResponse.json({ data, error: null, diagnostics: null });
+  return NextResponse.json({
+    data,
+    error:     null,
+    fetchedAt: snap.fetchedAt ?? null,
+  });
 }
