@@ -1,5 +1,16 @@
 "use client";
 
+/**
+ * MercadoClient — fetches MAE API directly from the browser.
+ *
+ * WHY browser-side: MAE's WAF blocks requests from cloud provider IPs
+ * (both AWS Lambda and Cloudflare Edge). Fetching from the user's browser
+ * uses their real ISP IP which is never blocked.
+ *
+ * The NEXT_PUBLIC_MAE_API_KEY is visible in the browser bundle, which is
+ * acceptable for a read-only data key used in an internal dashboard.
+ */
+
 import { useState, useMemo, useEffect } from "react";
 import {
   ResponsiveContainer,
@@ -22,6 +33,131 @@ import {
   type Period,
 } from "@/components/dashboard/PeriodSelector";
 import type { MercadoData, SeriesPoint, MAEQuote, RepoTermPoint } from "@/lib/mae/mercado";
+
+// ---- MAE direct client (browser-side) ----
+
+const MAE_BASE = "https://api.mae.com.ar/MarketData/v1";
+
+function getPublicKey(): string {
+  return process.env.NEXT_PUBLIC_MAE_API_KEY ?? "";
+}
+
+function toISO(d: Date) {
+  return d.toISOString().split("T")[0];
+}
+
+async function maeGet(path: string, params: Record<string, string | number>): Promise<unknown> {
+  const key = getPublicKey();
+  const url = new URL(`${MAE_BASE}${path}`);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+
+  const res = await fetch(url.toString(), {
+    headers: { "x-api-key": key, "Accept": "application/json" },
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`MAE ${res.status} en ${path} — ${text.slice(0, 120)}`);
+  }
+  return res.json();
+}
+
+// ---- Repo data processing ----
+
+interface RawRepo {
+  fecha: string;
+  plazo: string;
+  tasaPP: number;
+  volumen: number;
+  cantOperaciones: number;
+}
+
+async function fetchAllRepos(months = 6): Promise<RawRepo[]> {
+  const desde = new Date();
+  desde.setMonth(desde.getMonth() - months);
+  const hasta = new Date();
+
+  const all: RawRepo[] = [];
+  for (let page = 1; page <= 8; page++) {
+    const batch = await maeGet("/mercado/cotizaciones/repo", {
+      fechaDesde: toISO(desde),
+      fechaHasta: toISO(hasta),
+      pageNumber: page,
+    }) as RawRepo[];
+
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    all.push(...batch);
+    if (batch.length < 50) break;
+  }
+  return all;
+}
+
+function buildRepoSeries(records: RawRepo[]) {
+  const byDatePlazo = new Map<string, Map<string, RawRepo>>();
+  for (const r of records) {
+    const fecha = r.fecha.slice(0, 10);
+    if (!byDatePlazo.has(fecha)) byDatePlazo.set(fecha, new Map());
+    byDatePlazo.get(fecha)!.set(r.plazo, r);
+  }
+
+  const dates = Array.from(byDatePlazo.keys()).sort();
+  const overnight: SeriesPoint[] = [];
+  const three_day: SeriesPoint[] = [];
+  const seven_day: SeriesPoint[] = [];
+  const volume:    SeriesPoint[] = [];
+
+  for (const fecha of dates) {
+    const day = byDatePlazo.get(fecha)!;
+    const on = day.get("001") ?? day.get("1");
+    if (on) {
+      overnight.push({ fecha, valor: on.tasaPP });
+      volume.push({ fecha, valor: Math.round(on.volumen / 1e9) });
+    }
+    const td = day.get("003") ?? day.get("3");
+    if (td) three_day.push({ fecha, valor: td.tasaPP });
+    const sd = day.get("007") ?? day.get("7");
+    if (sd) seven_day.push({ fecha, valor: sd.tasaPP });
+  }
+
+  const latestDate = dates[dates.length - 1];
+  const latestDay  = byDatePlazo.get(latestDate) ?? new Map();
+  const latestCurve: RepoTermPoint[] = Array.from(latestDay.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([plazo, r]) => ({ plazo, tasa: r.tasaPP, vol: r.volumen, ops: r.cantOperaciones }));
+
+  return { overnight, three_day, seven_day, volume, latestCurve };
+}
+
+async function loadMercadoData(): Promise<MercadoData> {
+  const [repoResult, caucionesResult, rentafijaResult, forexResult] = await Promise.allSettled([
+    fetchAllRepos(6),
+    maeGet("/mercado/cotizaciones/cauciones", { pageNumber: 1 }) as Promise<MAEQuote[]>,
+    maeGet("/mercado/cotizaciones/rentafija", { pageNumber: 1 }) as Promise<MAEQuote[]>,
+    maeGet("/mercado/cotizaciones/forex",     { pageNumber: 1 }) as Promise<MAEQuote[]>,
+  ]);
+
+  if (repoResult.status === "rejected") throw repoResult.reason;
+
+  const rawRepo   = repoResult.value;
+  const cauciones = caucionesResult.status  === "fulfilled" ? caucionesResult.value as MAEQuote[] : [];
+  const rentafija = rentafijaResult.status  === "fulfilled" ? rentafijaResult.value as MAEQuote[] : [];
+  const forex     = forexResult.status      === "fulfilled" ? forexResult.value     as MAEQuote[] : [];
+
+  const { overnight, three_day, seven_day, volume, latestCurve } = buildRepoSeries(rawRepo);
+
+  return {
+    repoOvernight:   overnight,
+    repo3d:          three_day,
+    repo7d:          seven_day,
+    repoVolume:      volume,
+    repoLatestCurve: latestCurve,
+    cauciones,
+    rentafija,
+    forex,
+    lastRepoDate:    overnight.at(-1)?.fecha ?? null,
+    marketOpen:      cauciones.length > 0 || rentafija.length > 0 || forex.length > 0,
+  };
+}
 
 // ---- Helpers ----
 
@@ -151,42 +287,26 @@ function CurvaBar({ data, height = 200 }: { data: RepoTermPoint[]; height?: numb
   if (data.length === 0) {
     return <div className="flex items-center justify-center text-slate-400 text-sm" style={{ height }}>Sin datos</div>;
   }
-
   const COLORS = ["#7c3aed", "#8b5cf6", "#a78bfa", "#c4b5fd", "#ddd6fe", "#ede9fe"];
-
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.12)" />
-        <XAxis
-          dataKey="plazo"
-          tickFormatter={(v) => `${parseInt(v)}d`}
-          tick={{ fontSize: 11, fill: "#94a3b8" }}
-        />
-        <YAxis
-          tickFormatter={(v) => `${v.toFixed(0)}%`}
-          tick={{ fontSize: 10, fill: "#94a3b8" }}
-          width={44}
-          domain={["auto", "auto"]}
-        />
+        <XAxis dataKey="plazo" tickFormatter={(v) => `${parseInt(v)}d`} tick={{ fontSize: 11, fill: "#94a3b8" }} />
+        <YAxis tickFormatter={(v) => `${v.toFixed(0)}%`} tick={{ fontSize: 10, fill: "#94a3b8" }} width={44} domain={["auto", "auto"]} />
         <Tooltip
-          formatter={(v: number, _: string, props) => [
-            `${v.toFixed(2)}% TNA`,
-            `Plazo ${parseInt(String(props.payload?.plazo))}d`,
-          ]}
+          formatter={(v: number, _: string, props) => [`${v.toFixed(2)}% TNA`, `Plazo ${parseInt(String(props.payload?.plazo))}d`]}
           contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 6, fontSize: 12 }}
         />
         <Bar dataKey="tasa" radius={[4, 4, 0, 0]}>
-          {data.map((_, i) => (
-            <Cell key={i} fill={COLORS[i % COLORS.length]} />
-          ))}
+          {data.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
         </Bar>
       </BarChart>
     </ResponsiveContainer>
   );
 }
 
-// ---- Bond price card ----
+// ---- Bond card ----
 
 function BondCard({ quote }: { quote: MAEQuote }) {
   const isUp = quote.variacion > 0;
@@ -212,7 +332,7 @@ function BondCard({ quote }: { quote: MAEQuote }) {
   );
 }
 
-// ---- Loading skeleton ----
+// ---- Skeleton ----
 
 function LoadingSkeleton() {
   return (
@@ -225,33 +345,25 @@ function LoadingSkeleton() {
       </div>
       <div className="h-72 bg-slate-200 dark:bg-slate-800 rounded-xl" />
       <div className="h-48 bg-slate-200 dark:bg-slate-800 rounded-xl" />
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="h-28 bg-slate-200 dark:bg-slate-800 rounded-xl" />
-        ))}
-      </div>
     </div>
   );
 }
 
-// ---- Main component ----
+// ---- Main content (rendered after data loads) ----
 
 const SOVEREIGN_TICKERS = ["GD30", "GD29", "AL30", "AL35", "AE38", "GD35", "GD38", "GD41", "GD46"];
 
 function MercadoContent({ data }: { data: MercadoData }) {
   const [period, setPeriod] = useState<Period>("6m");
 
-  const f = useMemo(
-    () => ({
-      repoOvernight: filterByPeriod(data.repoOvernight, period),
-      repo3d:        filterByPeriod(data.repo3d, period),
-      repo7d:        filterByPeriod(data.repo7d, period),
-      repoVolume:    filterByPeriod(data.repoVolume, period),
-    }),
-    [data, period]
-  );
+  const f = useMemo(() => ({
+    repoOvernight: filterByPeriod(data.repoOvernight, period),
+    repo3d:        filterByPeriod(data.repo3d, period),
+    repo7d:        filterByPeriod(data.repo7d, period),
+    repoVolume:    filterByPeriod(data.repoVolume, period),
+  }), [data, period]);
 
-  const mep = findQuote(data.forex, "USMEP");
+  const mep      = findQuote(data.forex, "USMEP");
   const usdTransf = findQuote(data.forex, "UST$T");
 
   const cau1d  = data.cauciones.find((q) => parseInt(q.plazo) <= 1);
@@ -296,62 +408,21 @@ function MercadoContent({ data }: { data: MercadoData }) {
       {/* Sticky period selector */}
       <div className="sticky top-16 z-40 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-3 bg-white/90 dark:bg-slate-950/90 backdrop-blur-sm border-b border-slate-200/60 dark:border-slate-800/60">
         <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
-            Período:
-          </span>
+          <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Período:</span>
           <PeriodSelector value={period} onChange={setPeriod} />
         </div>
       </div>
 
-      {/* ================================================================
-          BLOQUE 1: REPOS MAE
-      ================================================================ */}
+      {/* === REPOS MAE === */}
       <BlockSection title="Repos MAE" icon="💴" color="violet">
         <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
           Tasas promedio ponderadas del mercado de repos del MAE. Referencia de liquidez interbancaria de corto plazo.
         </p>
-
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-          <DeltaKPICard
-            label="Repo Overnight (1d)"
-            value={lastVal(data.repoOvernight)}
-            suffix="% TNA"
-            date={lastDate(data.repoOvernight)}
-            delta={getDelta(data.repoOvernight)}
-            color="#7c3aed"
-            positiveIsGood={false}
-            decimals={2}
-          />
-          <DeltaKPICard
-            label="Repo 3 días"
-            value={lastVal(data.repo3d)}
-            suffix="% TNA"
-            date={lastDate(data.repo3d)}
-            delta={getDelta(data.repo3d)}
-            color="#8b5cf6"
-            positiveIsGood={false}
-            decimals={2}
-          />
-          <DeltaKPICard
-            label="Repo 7 días"
-            value={lastVal(data.repo7d)}
-            suffix="% TNA"
-            date={lastDate(data.repo7d)}
-            delta={getDelta(data.repo7d)}
-            color="#a78bfa"
-            positiveIsGood={false}
-            decimals={2}
-          />
-          <DeltaKPICard
-            label="Volumen Overnight"
-            value={lastVal(data.repoVolume)}
-            suffix="B ARS"
-            date={lastDate(data.repoVolume)}
-            delta={getDelta(data.repoVolume)}
-            color="#6d28d9"
-            positiveIsGood={true}
-            decimals={0}
-          />
+          <DeltaKPICard label="Repo Overnight (1d)" value={lastVal(data.repoOvernight)} suffix="% TNA" date={lastDate(data.repoOvernight)} delta={getDelta(data.repoOvernight)} color="#7c3aed" positiveIsGood={false} decimals={2} />
+          <DeltaKPICard label="Repo 3 días"         value={lastVal(data.repo3d)}        suffix="% TNA" date={lastDate(data.repo3d)}        delta={getDelta(data.repo3d)}        color="#8b5cf6" positiveIsGood={false} decimals={2} />
+          <DeltaKPICard label="Repo 7 días"         value={lastVal(data.repo7d)}        suffix="% TNA" date={lastDate(data.repo7d)}        delta={getDelta(data.repo7d)}        color="#a78bfa" positiveIsGood={false} decimals={2} />
+          <DeltaKPICard label="Volumen Overnight"   value={lastVal(data.repoVolume)}    suffix="B ARS" date={lastDate(data.repoVolume)}    delta={getDelta(data.repoVolume)}    color="#6d28d9" positiveIsGood={true}  decimals={0} />
         </div>
 
         <div className="card card-dark p-5 mb-5">
@@ -365,8 +436,7 @@ function MercadoContent({ data }: { data: MercadoData }) {
               { key: "tres_d",    label: "3 días",          data: f.repo3d,        color: "#8b5cf6" },
               { key: "siete_d",   label: "7 días",          data: f.repo7d,        color: "#a78bfa" },
             ]}
-            height={280}
-            unit="% TNA"
+            height={280} unit="% TNA"
           />
         </div>
 
@@ -385,51 +455,27 @@ function MercadoContent({ data }: { data: MercadoData }) {
             <h3 className="font-semibold text-slate-900 dark:text-slate-100">Volumen Diario Overnight</h3>
             <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">ARS miles de millones</span>
           </div>
-          <MultiSeriesChart
-            series={[{ key: "vol", label: "Volumen", data: f.repoVolume, color: "#6d28d9" }]}
-            height={180}
-            unit="B ARS"
-          />
+          <MultiSeriesChart series={[{ key: "vol", label: "Volumen", data: f.repoVolume, color: "#6d28d9" }]} height={180} unit="B ARS" />
         </div>
       </BlockSection>
 
-      {/* ================================================================
-          BLOQUE 2: FX DE MERCADO
-      ================================================================ */}
+      {/* === FX === */}
       <BlockSection title="FX de Mercado" icon="💵" color="blue">
         {!data.marketOpen && <div className="mb-4"><MarketClosedBadge /></div>}
-
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
           {mep ? (
-            <DeltaKPICard
-              label="USD MEP (Dólar Bolsa)"
-              value={mep.precioUltimo}
-              prefix="$"
-              date={mep.fecha?.slice(0, 10)}
-              color="#1c7ed6"
-              positiveIsGood={false}
-              decimals={2}
-            />
+            <DeltaKPICard label="USD MEP (Dólar Bolsa)" value={mep.precioUltimo} prefix="$" date={mep.fecha?.slice(0, 10)} color="#1c7ed6" positiveIsGood={false} decimals={2} />
           ) : (
             <PendingCard label="USD MEP" description="Dólar bolsa (USMEP) · MAE" source="MAE / Mercado cerrado" />
           )}
           {usdTransf ? (
-            <DeltaKPICard
-              label="USD Transferencia"
-              value={usdTransf.precioUltimo}
-              prefix="$"
-              date={usdTransf.fecha?.slice(0, 10)}
-              color="#1971c2"
-              positiveIsGood={false}
-              decimals={2}
-            />
+            <DeltaKPICard label="USD Transferencia" value={usdTransf.precioUltimo} prefix="$" date={usdTransf.fecha?.slice(0, 10)} color="#1971c2" positiveIsGood={false} decimals={2} />
           ) : (
             <PendingCard label="USD Transferencia" description="USD wire → ARS · MAE" source="MAE / Mercado cerrado" />
           )}
           <PendingCard label="USD CCL" description="Derivado GD30 ARS ÷ GD30 USD" source="Calculado de renta fija" />
           <PendingCard label="Brecha MEP/Oficial" description="(MEP − Oficial) / Oficial" source="Calculado" unit="%" />
         </div>
-
         {data.forex.length > 0 && (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
             {data.forex.filter((q) => q.precioUltimo > 0).map((q) => (
@@ -439,27 +485,18 @@ function MercadoContent({ data }: { data: MercadoData }) {
         )}
       </BlockSection>
 
-      {/* ================================================================
-          BLOQUE 3: CAUCIONES BURSÁTILES
-      ================================================================ */}
+      {/* === CAUCIONES === */}
       <BlockSection title="Cauciones Bursátiles" icon="📋" color="emerald">
         {!data.marketOpen && <div className="mb-4"><MarketClosedBadge /></div>}
         <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
           Tasas de préstamos garantizados con valores (TNA). Referencia de costo de fondeo del mercado de capitales.
         </p>
-
         {data.cauciones.length > 0 ? (
           <>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-              {cau1d && (
-                <DeltaKPICard label="Caución 1 día" value={cau1d.ultimaTasa} suffix="% TNA" date={cau1d.fecha?.slice(0, 10)} color="#2f9e44" positiveIsGood={false} decimals={2} />
-              )}
-              {cau7d && (
-                <DeltaKPICard label="Caución 7 días" value={cau7d.ultimaTasa} suffix="% TNA" date={cau7d.fecha?.slice(0, 10)} color="#2f9e44" positiveIsGood={false} decimals={2} />
-              )}
-              {cau30d && (
-                <DeltaKPICard label="Caución ~30 días" value={cau30d.ultimaTasa} suffix="% TNA" date={cau30d.fecha?.slice(0, 10)} color="#2f9e44" positiveIsGood={false} decimals={2} />
-              )}
+              {cau1d  && <DeltaKPICard label="Caución 1 día"   value={cau1d.ultimaTasa}  suffix="% TNA" date={cau1d.fecha?.slice(0,10)}  color="#2f9e44" positiveIsGood={false} decimals={2} />}
+              {cau7d  && <DeltaKPICard label="Caución 7 días"  value={cau7d.ultimaTasa}  suffix="% TNA" date={cau7d.fecha?.slice(0,10)}  color="#2f9e44" positiveIsGood={false} decimals={2} />}
+              {cau30d && <DeltaKPICard label="Caución ~30 días" value={cau30d.ultimaTasa} suffix="% TNA" date={cau30d.fecha?.slice(0,10)} color="#2f9e44" positiveIsGood={false} decimals={2} />}
             </div>
             <div className="card card-dark p-5">
               <h3 className="font-semibold text-slate-900 dark:text-slate-100 mb-4">Curva de Cauciones — Hoy</h3>
@@ -481,21 +518,16 @@ function MercadoContent({ data }: { data: MercadoData }) {
         )}
       </BlockSection>
 
-      {/* ================================================================
-          BLOQUE 4: RENTA FIJA
-      ================================================================ */}
+      {/* === RENTA FIJA === */}
       <BlockSection title="Renta Fija" icon="📊" color="orange">
         {!data.marketOpen && <div className="mb-4"><MarketClosedBadge /></div>}
-
         {data.rentafija.length > 0 ? (
           <>
             {sovereignBonds.length > 0 && (
               <>
                 <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Bonos Soberanos</p>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
-                  {sovereignBonds.map((q) => (
-                    <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />
-                  ))}
+                  {sovereignBonds.map((q) => <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />)}
                 </div>
               </>
             )}
@@ -503,29 +535,22 @@ function MercadoContent({ data }: { data: MercadoData }) {
               <>
                 <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">LECAP / Tasa Fija</p>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
-                  {lecaps.map((q) => (
-                    <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />
-                  ))}
+                  {lecaps.map((q) => <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />)}
                 </div>
               </>
             )}
             {sovereignBonds.length === 0 && (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                {data.rentafija.slice(0, 16).map((q) => (
-                  <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />
-                ))}
+                {data.rentafija.slice(0, 16).map((q) => <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />)}
               </div>
             )}
           </>
         ) : (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {["GD30", "AL30", "AE38", "GD35", "GD41", "GD46", "LECAP", "LECER"].map((t) => (
-              <PendingCard
-                key={t}
-                label={t}
+              <PendingCard key={t} label={t}
                 description={t.startsWith("GD") || t.startsWith("AL") || t.startsWith("AE") ? "Bono soberano en USD" : "Instrumento de tasa fija"}
-                source="Disponible en horario de mercado"
-                unit="ARS"
+                source="Disponible en horario de mercado" unit="ARS"
               />
             ))}
           </div>
@@ -535,31 +560,19 @@ function MercadoContent({ data }: { data: MercadoData }) {
   );
 }
 
-// ---- Root export — fetches data client-side ----
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Diagnostics = Record<string, any> | null;
+// ---- Root export ----
 
 export function MercadoClient() {
-  const [data, setData]           = useState<MercadoData | null>(null);
-  const [error, setError]         = useState<string | null>(null);
-  const [diagnostics, setDiag]    = useState<Diagnostics>(null);
-  const [loading, setLoading]     = useState(true);
+  const [data, setData]       = useState<MercadoData | null>(null);
+  const [error, setError]     = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const load = () => {
     setLoading(true);
     setError(null);
-    fetch("/api/mae/mercado")
-      .then(async (res) => {
-        const json = await res.json();
-        setDiag(json.diagnostics ?? null);
-        if (json.data) {
-          setData(json.data);
-        } else {
-          setError(json.error ?? "Sin datos");
-        }
-      })
-      .catch((err) => setError(String(err)))
+    loadMercadoData()
+      .then(setData)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
   };
 
@@ -568,26 +581,19 @@ export function MercadoClient() {
   if (loading) return <LoadingSkeleton />;
 
   if (error) {
+    const isCors = error.toLowerCase().includes("failed to fetch") || error.toLowerCase().includes("cors");
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Mercado</h1>
         <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-6">
           <p className="text-sm font-semibold text-red-700 dark:text-red-400 mb-2">Error al cargar datos del MAE</p>
-          <p className="text-xs text-red-600 dark:text-red-500 font-mono break-all mb-4">{error}</p>
-          {diagnostics && (
-            <details className="mb-4">
-              <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-700 dark:hover:text-slate-300">
-                Ver diagnóstico técnico
-              </summary>
-              <pre className="mt-2 text-xs text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 rounded p-3 overflow-x-auto">
-                {JSON.stringify(diagnostics, null, 2)}
-              </pre>
-            </details>
+          <p className="text-xs text-red-600 dark:text-red-500 font-mono break-all mb-3">{error}</p>
+          {isCors && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
+              ⚠️ Error de CORS — MAE no permite requests directos desde el browser. Contactar a A3 para habilitar CORS o whitelist de IPs de Vercel.
+            </p>
           )}
-          <button
-            onClick={load}
-            className="text-xs bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 px-3 py-1.5 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors"
-          >
+          <button onClick={load} className="text-xs bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 px-3 py-1.5 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors">
             Reintentar
           </button>
         </div>
