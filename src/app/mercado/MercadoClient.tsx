@@ -1280,33 +1280,67 @@ export function MercadoClient() {
       <BlockSection title="Repos MAE & Cauciones" icon="💴" color="violet">
         {mae ? (
           <div className="space-y-6">
-            {/* ── Repo KPI cards ─────────────────────────────────────────── */}
+            {/* ── Repo + Cauciones KPI cards ──────────────────────────────── */}
             {(() => {
-              const repoToday = mae.repoLatestCurve;
-              const on  = repoToday.find((r) => r.plazo === "001" || r.plazo === "1");
-              const td  = repoToday.find((r) => r.plazo === "003" || r.plazo === "3");
-              const sd  = repoToday.find((r) => r.plazo === "007" || r.plazo === "7");
-              const cau = mae.cauciones[0];
-              const mkCards = (label: string, tasa: number | undefined, vol?: number) => (
+              // Repo overnight: today's latestCurve, fallback to last in history
+              const onToday = mae.repoLatestCurve.find((r) => r.plazo === "001" || r.plazo === "1");
+              const onLast  = mae.repoOvernight.at(-1);
+              const onTasa  = onToday?.tasa ?? onLast?.valor;
+              const onVol   = onToday?.vol;
+              const onFecha = onToday ? null : onLast?.fecha;  // show date only when using fallback
+
+              // Cauciones: find ARS and USD separately
+              const cauARS = mae.cauciones.find((c) => c.moneda === "$" || c.ticker === "CAARS");
+              const cauUSD = mae.cauciones.find((c) => c.moneda === "D" || c.ticker === "CAUSD");
+
+              const mkRepoCard = (label: string, tasa: number | undefined, vol?: number, fallbackFecha?: string | null) => (
                 <div className="card card-dark p-4">
                   <p className="text-[11px] text-slate-500 uppercase tracking-wide mb-1">{label}</p>
                   {tasa != null ? (
                     <>
-                      <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">{tasa.toFixed(2)}<span className="text-sm ml-1 text-slate-400">%</span></p>
-                      {vol != null && <p className="text-xs text-slate-500 mt-0.5">Vol: {(vol / 1e12).toFixed(2)} B ARS</p>}
+                      <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+                        {tasa.toFixed(2)}<span className="text-sm ml-1 text-slate-400">%</span>
+                      </p>
+                      {vol != null && (
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Vol: {vol >= 1e12 ? `${(vol / 1e12).toFixed(2)} B` : `${(vol / 1e9).toFixed(1)} MM`} ARS
+                        </p>
+                      )}
+                      {fallbackFecha && (
+                        <p className="text-[10px] text-amber-500 mt-0.5">Últ. {new Date(fallbackFecha + "T00:00:00").toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" })}</p>
+                      )}
                     </>
                   ) : (
-                    <p className="text-sm text-slate-400">Sin operaciones</p>
+                    <p className="text-sm text-slate-400">Sin datos</p>
                   )}
                   <p className="text-[10px] text-slate-500 mt-1">TNA · MAE</p>
                 </div>
               );
+
+              const mkCauCard = (label: string, cau: typeof cauARS) => (
+                <div className="card card-dark p-4">
+                  <p className="text-[11px] text-slate-500 uppercase tracking-wide mb-1">{label}</p>
+                  {cau && cau.ultimaTasa > 0 ? (
+                    <>
+                      <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+                        {cau.ultimaTasa.toFixed(2)}<span className="text-sm ml-1 text-slate-400">%</span>
+                      </p>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Rango: {cau.precioMinimo.toFixed(2)}–{cau.precioMaximo.toFixed(2)}%
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-sm text-slate-400">Sin datos</p>
+                  )}
+                  <p className="text-[10px] text-slate-500 mt-1">TNA · MAE</p>
+                </div>
+              );
+
               return (
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                  {mkCards("Repo Overnight", on?.tasa, on?.vol)}
-                  {mkCards("Repo 3 días",    td?.tasa, td?.vol)}
-                  {mkCards("Repo 7 días",    sd?.tasa, sd?.vol)}
-                  {mkCards("Caución USD 1d", cau ? cau.ultimaTasa : undefined)}
+                <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                  {mkRepoCard("Repo Overnight", onTasa, onVol, onFecha)}
+                  {mkCauCard("Caución ARS 1d", cauARS)}
+                  {mkCauCard("Caución USD 1d", cauUSD)}
                 </div>
               );
             })()}
@@ -1381,8 +1415,8 @@ export function MercadoClient() {
                 Ir a Vercel → Settings → Environment Variables → agregar <code className="bg-amber-100 dark:bg-amber-900/40 px-1 rounded">MAE_API_KEY</code> con el valor de la key de MAE.
               </p>
             </div>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              {["Repo Overnight", "Repo 3 días", "Repo 7 días", "Caución USD 1d"].map((l) => (
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+              {["Repo Overnight", "Caución ARS 1d", "Caución USD 1d"].map((l) => (
                 <PendingCard key={l} label={l} description="Requiere MAE_API_KEY en Vercel" source="MAE" unit="% TNA" />
               ))}
             </div>
