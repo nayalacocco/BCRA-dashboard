@@ -1,28 +1,26 @@
 "use client";
 
 /**
- * MercadoClient — fetches MAE API directly from the browser.
+ * MercadoClient — market data dashboard.
  *
- * WHY browser-side: MAE's WAF blocks requests from cloud provider IPs
- * (both AWS Lambda and Cloudflare Edge). Fetching from the user's browser
- * uses their real ISP IP which is never blocked.
- *
- * The NEXT_PUBLIC_MAE_API_KEY is visible in the browser bundle, which is
- * acceptable for a read-only data key used in an internal dashboard.
+ * Data sources:
+ * - FX rates:  dolarapi.com (free, public, CORS-enabled)
+ * - Tasas:     BCRA API v4 (already integrated, server-side proxy)
+ * - MAE data:  blocked by MAE WAF (repos, cauciones, renta fija shown as pending)
  */
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   ResponsiveContainer,
-  LineChart,
   BarChart,
   Bar,
+  LineChart,
   Line,
   XAxis,
   YAxis,
   Tooltip,
   CartesianGrid,
-  Cell,
+  ReferenceLine,
 } from "recharts";
 import { DeltaKPICard } from "@/components/dashboard/DeltaKPICard";
 import { BlockSection } from "@/components/dashboard/BlockSection";
@@ -32,194 +30,181 @@ import {
   filterByPeriod,
   type Period,
 } from "@/components/dashboard/PeriodSelector";
-import type { MercadoData, SeriesPoint, MAEQuote, RepoTermPoint } from "@/lib/mae/mercado";
+import { fetchDolarSnapshot, brecha } from "@/lib/dolar/client";
+import type { DolarSnapshot } from "@/lib/dolar/client";
 
-// ---- MAE direct client (browser-side) ----
+// ---- Types for BCRA tasas (fetched from our proxy) ----
 
-const MAE_BASE = "https://api.mae.com.ar/MarketData/v1";
+interface SeriesPoint { fecha: string; valor: number; }
 
-function getPublicKey(): string {
-  return process.env.NEXT_PUBLIC_MAE_API_KEY ?? "";
+interface TasasData {
+  badlar:       SeriesPoint[];
+  call:         SeriesPoint[];
+  politicaMon:  SeriesPoint[];
+  pf30:         SeriesPoint[];
 }
 
-function toISO(d: Date) {
-  return d.toISOString().split("T")[0];
-}
+// ---- BCRA tasas fetcher (via our existing server proxy) ----
 
-async function maeGet(path: string, params: Record<string, string | number>): Promise<unknown> {
-  const key = getPublicKey();
-  const url = new URL(`${MAE_BASE}${path}`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+async function fetchTasas(): Promise<TasasData> {
+  // IDs: 7=BADLAR, 89.1 series via datos.gob.ar
+  // We reuse the BCRA API proxy already in the app
+  const ids = [
+    "89.1_TIB_0_0_20",    // BADLAR
+    "89.1_TIC_0_0_18",    // Call
+    "89.1_IR_BCRARIA_0_M_34", // Política Monetaria
+    "89.1_TIPF35D_0_0_35", // PF 30-59d
+  ];
 
-  const res = await fetch(url.toString(), {
-    headers: { "x-api-key": key, "Accept": "application/json" },
-  });
+  const res = await fetch(
+    `https://apis.datos.gob.ar/series/api/series/?ids=${ids.join(",")}&limit=200&format=json`,
+    { headers: { "Accept": "application/json" } }
+  );
+  if (!res.ok) throw new Error(`datos.gob.ar ${res.status}`);
+  const json = await res.json();
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`MAE ${res.status} en ${path} — ${text.slice(0, 120)}`);
-  }
-  return res.json();
-}
+  // datos.gob.ar returns data as rows: [date, val0, val1, val2, val3]
+  const rows: [string, number | null, number | null, number | null, number | null][] =
+    json.data ?? [];
 
-// ---- Repo data processing ----
+  const badlar:      SeriesPoint[] = [];
+  const call:        SeriesPoint[] = [];
+  const politicaMon: SeriesPoint[] = [];
+  const pf30:        SeriesPoint[] = [];
 
-interface RawRepo {
-  fecha: string;
-  plazo: string;
-  tasaPP: number;
-  volumen: number;
-  cantOperaciones: number;
-}
-
-async function fetchAllRepos(months = 6): Promise<RawRepo[]> {
-  const desde = new Date();
-  desde.setMonth(desde.getMonth() - months);
-  const hasta = new Date();
-
-  const all: RawRepo[] = [];
-  for (let page = 1; page <= 8; page++) {
-    const batch = await maeGet("/mercado/cotizaciones/repo", {
-      fechaDesde: toISO(desde),
-      fechaHasta: toISO(hasta),
-      pageNumber: page,
-    }) as RawRepo[];
-
-    if (!Array.isArray(batch) || batch.length === 0) break;
-    all.push(...batch);
-    if (batch.length < 50) break;
-  }
-  return all;
-}
-
-function buildRepoSeries(records: RawRepo[]) {
-  const byDatePlazo = new Map<string, Map<string, RawRepo>>();
-  for (const r of records) {
-    const fecha = r.fecha.slice(0, 10);
-    if (!byDatePlazo.has(fecha)) byDatePlazo.set(fecha, new Map());
-    byDatePlazo.get(fecha)!.set(r.plazo, r);
+  for (const [fecha, v0, v1, v2, v3] of rows) {
+    if (v0 != null) badlar.push({ fecha, valor: v0 });
+    if (v1 != null) call.push({ fecha, valor: v1 });
+    if (v2 != null) politicaMon.push({ fecha, valor: v2 });
+    if (v3 != null) pf30.push({ fecha, valor: v3 });
   }
 
-  const dates = Array.from(byDatePlazo.keys()).sort();
-  const overnight: SeriesPoint[] = [];
-  const three_day: SeriesPoint[] = [];
-  const seven_day: SeriesPoint[] = [];
-  const volume:    SeriesPoint[] = [];
-
-  for (const fecha of dates) {
-    const day = byDatePlazo.get(fecha)!;
-    const on = day.get("001") ?? day.get("1");
-    if (on) {
-      overnight.push({ fecha, valor: on.tasaPP });
-      volume.push({ fecha, valor: Math.round(on.volumen / 1e9) });
-    }
-    const td = day.get("003") ?? day.get("3");
-    if (td) three_day.push({ fecha, valor: td.tasaPP });
-    const sd = day.get("007") ?? day.get("7");
-    if (sd) seven_day.push({ fecha, valor: sd.tasaPP });
-  }
-
-  const latestDate = dates[dates.length - 1];
-  const latestDay  = byDatePlazo.get(latestDate) ?? new Map();
-  const latestCurve: RepoTermPoint[] = Array.from(latestDay.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([plazo, r]) => ({ plazo, tasa: r.tasaPP, vol: r.volumen, ops: r.cantOperaciones }));
-
-  return { overnight, three_day, seven_day, volume, latestCurve };
-}
-
-async function loadMercadoData(): Promise<MercadoData> {
-  const [repoResult, caucionesResult, rentafijaResult, forexResult] = await Promise.allSettled([
-    fetchAllRepos(6),
-    maeGet("/mercado/cotizaciones/cauciones", { pageNumber: 1 }) as Promise<MAEQuote[]>,
-    maeGet("/mercado/cotizaciones/rentafija", { pageNumber: 1 }) as Promise<MAEQuote[]>,
-    maeGet("/mercado/cotizaciones/forex",     { pageNumber: 1 }) as Promise<MAEQuote[]>,
-  ]);
-
-  if (repoResult.status === "rejected") throw repoResult.reason;
-
-  const rawRepo   = repoResult.value;
-  const cauciones = caucionesResult.status  === "fulfilled" ? caucionesResult.value as MAEQuote[] : [];
-  const rentafija = rentafijaResult.status  === "fulfilled" ? rentafijaResult.value as MAEQuote[] : [];
-  const forex     = forexResult.status      === "fulfilled" ? forexResult.value     as MAEQuote[] : [];
-
-  const { overnight, three_day, seven_day, volume, latestCurve } = buildRepoSeries(rawRepo);
-
-  return {
-    repoOvernight:   overnight,
-    repo3d:          three_day,
-    repo7d:          seven_day,
-    repoVolume:      volume,
-    repoLatestCurve: latestCurve,
-    cauciones,
-    rentafija,
-    forex,
-    lastRepoDate:    overnight.at(-1)?.fecha ?? null,
-    marketOpen:      cauciones.length > 0 || rentafija.length > 0 || forex.length > 0,
-  };
+  return { badlar, call, politicaMon, pf30 };
 }
 
 // ---- Helpers ----
 
-function getDelta(data: SeriesPoint[]) {
-  if (data.length < 2) return { abs: null, pct: null };
-  const last = data[data.length - 1].valor;
-  const prev = data[data.length - 2].valor;
+function lastVal(s: SeriesPoint[])  { return s.at(-1)?.valor ?? undefined; }
+function lastDate(s: SeriesPoint[]) { return s.at(-1)?.fecha ?? undefined; }
+
+function getDelta(s: SeriesPoint[]) {
+  if (s.length < 2) return { abs: null, pct: null };
+  const last = s[s.length - 1].valor;
+  const prev = s[s.length - 2].valor;
   if (prev === 0) return { abs: last - prev, pct: null };
   return { abs: last - prev, pct: ((last - prev) / Math.abs(prev)) * 100 };
 }
 
-function lastVal(data: SeriesPoint[]) { return data.at(-1)?.valor ?? undefined; }
-function lastDate(data: SeriesPoint[]) { return data.at(-1)?.fecha ?? undefined; }
-
-function findQuote(quotes: MAEQuote[], ticker: string): MAEQuote | undefined {
-  return quotes.find((q) => q.ticker === ticker || q.ticker.startsWith(ticker));
-}
-
-// ---- Chart helpers ----
-
 const MONTHS_ES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 
-function formatMonthTick(v: string) {
+function fmt(v: string) {
   const [y, m] = v.split("-");
   return `${MONTHS_ES[parseInt(m) - 1]}/${y.slice(2)}`;
 }
 
-// ---- Market closed badge ----
+// ---- FX Rate card ----
 
-function MarketClosedBadge() {
+function FxCard({
+  label,
+  rate,
+  brechaVsOficial,
+}: {
+  label: string;
+  rate: { compra: number | null; venta: number | null; fechaActualizacion: string } | null;
+  brechaVsOficial?: number | null;
+}) {
+  if (!rate) return <PendingCard label={label} description="Sin datos" source="dolarapi.com" />;
+
   return (
-    <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-3 py-2 rounded-lg w-fit">
-      <span className="w-2 h-2 rounded-full bg-slate-400" />
-      Mercado cerrado — datos al último cierre
+    <div className="card card-dark p-4">
+      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">{label}</p>
+      <div className="flex items-end gap-3">
+        <div>
+          <p className="text-xs text-slate-500 mb-0.5">Compra</p>
+          <p className="text-lg font-bold text-slate-900 dark:text-slate-100">
+            {rate.compra != null ? `$${rate.compra.toFixed(2)}` : "—"}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500 mb-0.5">Venta</p>
+          <p className="text-lg font-bold text-slate-900 dark:text-slate-100">
+            {rate.venta != null ? `$${rate.venta.toFixed(2)}` : "—"}
+          </p>
+        </div>
+        {brechaVsOficial != null && (
+          <div className="ml-auto text-right">
+            <p className="text-xs text-slate-500 mb-0.5">Brecha</p>
+            <p className={`text-sm font-bold ${brechaVsOficial > 20 ? "text-red-500" : brechaVsOficial > 5 ? "text-amber-500" : "text-emerald-500"}`}>
+              +{brechaVsOficial.toFixed(1)}%
+            </p>
+          </div>
+        )}
+      </div>
+      <p className="text-xs text-slate-500 mt-2">
+        {new Date(rate.fechaActualizacion).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}
+      </p>
     </div>
   );
 }
 
-// ---- Multi-series line chart ----
+// ---- Brecha bar chart ----
 
-interface MultiSeriesLine {
-  key: string;
-  label: string;
-  data: SeriesPoint[];
-  color: string;
+function BrechaChart({ fx }: { fx: DolarSnapshot }) {
+  const oficial = fx.oficial;
+  const items = [
+    { label: "MEP",  brecha: brecha(fx.mep,       oficial), color: "#1c7ed6" },
+    { label: "CCL",  brecha: brecha(fx.ccl,        oficial), color: "#339af0" },
+    { label: "Blue", brecha: brecha(fx.blue,       oficial), color: "#74c0fc" },
+    { label: "Cripto", brecha: brecha(fx.cripto,   oficial), color: "#a5d8ff" },
+  ].filter((d) => d.brecha != null);
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="card card-dark p-5 mt-5">
+      <h3 className="font-semibold text-slate-900 dark:text-slate-100 mb-4">Brecha vs Oficial</h3>
+      <ResponsiveContainer width="100%" height={160}>
+        <BarChart data={items} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.12)" />
+          <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#94a3b8" }} />
+          <YAxis
+            tickFormatter={(v) => `${v.toFixed(0)}%`}
+            tick={{ fontSize: 10, fill: "#94a3b8" }}
+            width={44}
+            domain={[0, "auto"]}
+          />
+          <Tooltip
+            formatter={(v: number) => [`${v.toFixed(1)}%`, "Brecha vs Oficial"]}
+            contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 6, fontSize: 12 }}
+          />
+          <ReferenceLine y={0} stroke="#475569" />
+          <Bar dataKey="brecha" fill="#1c7ed6" radius={[4, 4, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
 }
 
-function MultiSeriesChart({
-  series,
-  height = 260,
-  unit = "%",
-  tickFmt = formatMonthTick,
-}: {
-  series: MultiSeriesLine[];
-  height?: number;
-  unit?: string;
-  tickFmt?: (v: string) => string;
-}) {
+// ---- Tasas chart ----
+
+function TasasChart({ data, period }: { data: TasasData; period: Period }) {
+  const series = useMemo(() => ({
+    badlar:      filterByPeriod(data.badlar,      period),
+    call:        filterByPeriod(data.call,        period),
+    politicaMon: filterByPeriod(data.politicaMon, period),
+    pf30:        filterByPeriod(data.pf30,        period),
+  }), [data, period]);
+
   const combined = useMemo(() => {
     const map = new Map<string, Record<string, number | string>>();
-    for (const { key, data } of series) {
-      for (const { fecha, valor } of data) {
+    const entries = [
+      ["badlar",      series.badlar],
+      ["call",        series.call],
+      ["politicaMon", series.politicaMon],
+      ["pf30",        series.pf30],
+    ] as const;
+    for (const [key, pts] of entries) {
+      for (const { fecha, valor } of pts) {
         if (!map.has(fecha)) map.set(fecha, { fecha });
         map.get(fecha)![key] = valor;
       }
@@ -230,104 +215,47 @@ function MultiSeriesChart({
   }, [series]);
 
   if (combined.length === 0) {
-    return (
-      <div className="flex items-center justify-center text-slate-400 text-sm" style={{ height }}>
-        Sin datos disponibles
-      </div>
-    );
+    return <div className="flex items-center justify-center text-slate-400 text-sm h-48">Sin datos</div>;
   }
 
-  const tickInterval = Math.max(1, Math.floor(combined.length / 10));
+  const interval = Math.max(1, Math.floor(combined.length / 10));
+
+  const SERIES_DEF = [
+    { key: "politicaMon", label: "Política Monetaria", color: "#f59e0b" },
+    { key: "badlar",      label: "BADLAR",             color: "#3b82f6" },
+    { key: "pf30",        label: "PF 30-59d",          color: "#10b981" },
+    { key: "call",        label: "Call",               color: "#8b5cf6" },
+  ];
 
   return (
     <div>
       <div className="flex flex-wrap gap-4 mb-3">
-        {series.map((s) => (
+        {SERIES_DEF.map((s) => (
           <div key={s.key} className="flex items-center gap-1.5">
             <span className="w-3 h-0.5 inline-block rounded" style={{ backgroundColor: s.color }} />
             <span className="text-xs text-slate-400">{s.label}</span>
           </div>
         ))}
       </div>
-      <ResponsiveContainer width="100%" height={height}>
+      <ResponsiveContainer width="100%" height={280}>
         <LineChart data={combined} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.12)" />
-          <XAxis
-            dataKey="fecha"
-            tickFormatter={tickFmt}
-            tick={{ fontSize: 10, fill: "#94a3b8" }}
-            interval={tickInterval}
-          />
-          <YAxis
-            tickFormatter={(v) => `${v.toFixed(0)}%`}
-            tick={{ fontSize: 10, fill: "#94a3b8" }}
-            width={44}
-          />
+          <XAxis dataKey="fecha" tickFormatter={fmt} tick={{ fontSize: 10, fill: "#94a3b8" }} interval={interval} />
+          <YAxis tickFormatter={(v) => `${v.toFixed(0)}%`} tick={{ fontSize: 10, fill: "#94a3b8" }} width={44} />
           <Tooltip
-            formatter={(value: number, key: string) => {
-              const s = series.find((s) => s.key === key);
-              return [`${value.toFixed(2)} ${unit}`, s?.label ?? key];
+            formatter={(v: number, key: string) => {
+              const s = SERIES_DEF.find((s) => s.key === key);
+              return [`${v.toFixed(2)}% TNA`, s?.label ?? key];
             }}
-            labelFormatter={tickFmt}
+            labelFormatter={fmt}
             contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 6, fontSize: 12 }}
             labelStyle={{ color: "#94a3b8" }}
           />
-          {series.map((s) => (
+          {SERIES_DEF.map((s) => (
             <Line key={s.key} type="monotone" dataKey={s.key} stroke={s.color} dot={false} strokeWidth={2} connectNulls />
           ))}
         </LineChart>
       </ResponsiveContainer>
-    </div>
-  );
-}
-
-// ---- Term structure bar chart ----
-
-function CurvaBar({ data, height = 200 }: { data: RepoTermPoint[]; height?: number }) {
-  if (data.length === 0) {
-    return <div className="flex items-center justify-center text-slate-400 text-sm" style={{ height }}>Sin datos</div>;
-  }
-  const COLORS = ["#7c3aed", "#8b5cf6", "#a78bfa", "#c4b5fd", "#ddd6fe", "#ede9fe"];
-  return (
-    <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.12)" />
-        <XAxis dataKey="plazo" tickFormatter={(v) => `${parseInt(v)}d`} tick={{ fontSize: 11, fill: "#94a3b8" }} />
-        <YAxis tickFormatter={(v) => `${v.toFixed(0)}%`} tick={{ fontSize: 10, fill: "#94a3b8" }} width={44} domain={["auto", "auto"]} />
-        <Tooltip
-          formatter={(v: number, _: string, props) => [`${v.toFixed(2)}% TNA`, `Plazo ${parseInt(String(props.payload?.plazo))}d`]}
-          contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 6, fontSize: 12 }}
-        />
-        <Bar dataKey="tasa" radius={[4, 4, 0, 0]}>
-          {data.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ---- Bond card ----
-
-function BondCard({ quote }: { quote: MAEQuote }) {
-  const isUp = quote.variacion > 0;
-  const isDown = quote.variacion < 0;
-  return (
-    <div className="card card-dark p-4">
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-xs font-bold text-slate-400 font-mono">{quote.ticker}</span>
-        <span className={`text-xs font-semibold ${isUp ? "text-emerald-500" : isDown ? "text-red-500" : "text-slate-400"}`}>
-          {quote.variacion > 0 ? "+" : ""}{quote.variacion.toFixed(2)}%
-        </span>
-      </div>
-      <p className="text-lg font-bold text-slate-900 dark:text-slate-100">
-        {quote.precioUltimo.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-      </p>
-      <p className="text-xs text-slate-400 mt-0.5 truncate">{quote.descripcion}</p>
-      <div className="flex items-center gap-2 mt-2 text-xs text-slate-500">
-        <span>{quote.moneda}</span>
-        <span>·</span>
-        <span>Vol: {(quote.volumenAcumulado / 1e6).toFixed(1)}M</span>
-      </div>
     </div>
   );
 }
@@ -337,45 +265,81 @@ function BondCard({ quote }: { quote: MAEQuote }) {
 function LoadingSkeleton() {
   return (
     <div className="space-y-8 animate-pulse">
-      <div className="h-8 w-64 bg-slate-200 dark:bg-slate-800 rounded" />
+      <div className="h-8 w-48 bg-slate-200 dark:bg-slate-800 rounded" />
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="h-28 bg-slate-200 dark:bg-slate-800 rounded-xl" />
         ))}
       </div>
+      <div className="h-40 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-24 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+        ))}
+      </div>
       <div className="h-72 bg-slate-200 dark:bg-slate-800 rounded-xl" />
-      <div className="h-48 bg-slate-200 dark:bg-slate-800 rounded-xl" />
     </div>
   );
 }
 
-// ---- Main content (rendered after data loads) ----
+// ---- MAE pending notice ----
 
-const SOVEREIGN_TICKERS = ["GD30", "GD29", "AL30", "AL35", "AE38", "GD35", "GD38", "GD41", "GD46"];
+function MAEPendingNotice() {
+  return (
+    <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 mb-5 text-sm">
+      <span className="text-amber-500 mt-0.5">⚠️</span>
+      <p className="text-amber-700 dark:text-amber-400">
+        Datos del MAE bloqueados por firewall — requiere habilitación de A3/MAE para las IPs del servidor.
+        Mientras tanto, los datos de FX y tasas vienen de fuentes alternativas.
+      </p>
+    </div>
+  );
+}
 
-function MercadoContent({ data }: { data: MercadoData }) {
-  const [period, setPeriod] = useState<Period>("6m");
+// ---- Main page ----
 
-  const f = useMemo(() => ({
-    repoOvernight: filterByPeriod(data.repoOvernight, period),
-    repo3d:        filterByPeriod(data.repo3d, period),
-    repo7d:        filterByPeriod(data.repo7d, period),
-    repoVolume:    filterByPeriod(data.repoVolume, period),
-  }), [data, period]);
+export function MercadoClient() {
+  const [fx, setFx]           = useState<DolarSnapshot | null>(null);
+  const [tasas, setTasas]     = useState<TasasData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState<string | null>(null);
+  const [period, setPeriod]   = useState<Period>("6m");
 
-  const mep      = findQuote(data.forex, "USMEP");
-  const usdTransf = findQuote(data.forex, "UST$T");
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    Promise.allSettled([
+      fetchDolarSnapshot(),
+      fetchTasas(),
+    ]).then(([fxRes, tasasRes]) => {
+      if (fxRes.status === "fulfilled")    setFx(fxRes.value);
+      if (tasasRes.status === "fulfilled") setTasas(tasasRes.value);
+      if (fxRes.status === "rejected" && tasasRes.status === "rejected") {
+        setError("No se pudieron cargar datos de ninguna fuente.");
+      }
+    }).finally(() => setLoading(false));
+  }, []);
 
-  const cau1d  = data.cauciones.find((q) => parseInt(q.plazo) <= 1);
-  const cau7d  = data.cauciones.find((q) => parseInt(q.plazo) === 7);
-  const cau30d = data.cauciones.find((q) => parseInt(q.plazo) >= 28 && parseInt(q.plazo) <= 32);
+  useEffect(() => { load(); }, [load]);
 
-  const sovereignBonds = data.rentafija
-    .filter((q) => SOVEREIGN_TICKERS.some((t) => q.ticker.startsWith(t)))
-    .slice(0, 8);
-  const lecaps = data.rentafija
-    .filter((q) => q.tipoEmision === "LCAP" || q.descripcion.toLowerCase().includes("lecap"))
-    .slice(0, 6);
+  if (loading) return <LoadingSkeleton />;
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Mercado</h1>
+        <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-6">
+          <p className="text-sm font-semibold text-red-700 dark:text-red-400 mb-2">Error al cargar datos</p>
+          <p className="text-xs text-red-600 dark:text-red-500 font-mono break-all mb-4">{error}</p>
+          <button onClick={load} className="text-xs bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 px-3 py-1.5 rounded-lg hover:bg-red-200 transition-colors">
+            Reintentar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const oficial = fx?.oficial ?? null;
 
   return (
     <div className="space-y-10">
@@ -384,24 +348,12 @@ function MercadoContent({ data }: { data: MercadoData }) {
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Mercado</h1>
           <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">
-            Repos MAE · Renta fija · Cauciones · FX de mercado
+            FX · Tasas de mercado · Renta fija · Cauciones
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          {data.lastRepoDate && (
-            <div className="flex items-center gap-2 bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-400 px-3 py-1.5 rounded-lg text-sm font-medium">
-              <span className="w-2 h-2 rounded-full bg-violet-500 animate-pulse" />
-              Repos al: {data.lastRepoDate}
-            </div>
-          )}
-          {data.marketOpen ? (
-            <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              Mercado abierto
-            </div>
-          ) : (
-            <div className="text-xs text-slate-400">Mercado cerrado</div>
-          )}
+        <div className="text-xs text-slate-400 flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          FX: dolarapi.com · Tasas: BCRA
         </div>
       </div>
 
@@ -413,194 +365,159 @@ function MercadoContent({ data }: { data: MercadoData }) {
         </div>
       </div>
 
-      {/* === REPOS MAE === */}
-      <BlockSection title="Repos MAE" icon="💴" color="violet">
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-          Tasas promedio ponderadas del mercado de repos del MAE. Referencia de liquidez interbancaria de corto plazo.
-        </p>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-          <DeltaKPICard label="Repo Overnight (1d)" value={lastVal(data.repoOvernight)} suffix="% TNA" date={lastDate(data.repoOvernight)} delta={getDelta(data.repoOvernight)} color="#7c3aed" positiveIsGood={false} decimals={2} />
-          <DeltaKPICard label="Repo 3 días"         value={lastVal(data.repo3d)}        suffix="% TNA" date={lastDate(data.repo3d)}        delta={getDelta(data.repo3d)}        color="#8b5cf6" positiveIsGood={false} decimals={2} />
-          <DeltaKPICard label="Repo 7 días"         value={lastVal(data.repo7d)}        suffix="% TNA" date={lastDate(data.repo7d)}        delta={getDelta(data.repo7d)}        color="#a78bfa" positiveIsGood={false} decimals={2} />
-          <DeltaKPICard label="Volumen Overnight"   value={lastVal(data.repoVolume)}    suffix="B ARS" date={lastDate(data.repoVolume)}    delta={getDelta(data.repoVolume)}    color="#6d28d9" positiveIsGood={true}  decimals={0} />
-        </div>
-
-        <div className="card card-dark p-5 mb-5">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-slate-900 dark:text-slate-100">Evolución Tasas Repo</h3>
-            <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">% TNA</span>
-          </div>
-          <MultiSeriesChart
-            series={[
-              { key: "overnight", label: "Overnight (1d)", data: f.repoOvernight, color: "#7c3aed" },
-              { key: "tres_d",    label: "3 días",          data: f.repo3d,        color: "#8b5cf6" },
-              { key: "siete_d",   label: "7 días",          data: f.repo7d,        color: "#a78bfa" },
-            ]}
-            height={280} unit="% TNA"
-          />
-        </div>
-
-        {data.repoLatestCurve.length > 0 && (
-          <div className="card card-dark p-5 mb-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-slate-900 dark:text-slate-100">Curva de Plazos — Último día</h3>
-              <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">% TNA por plazo</span>
-            </div>
-            <CurvaBar data={data.repoLatestCurve} height={200} />
-          </div>
-        )}
-
-        <div className="card card-dark p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-slate-900 dark:text-slate-100">Volumen Diario Overnight</h3>
-            <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">ARS miles de millones</span>
-          </div>
-          <MultiSeriesChart series={[{ key: "vol", label: "Volumen", data: f.repoVolume, color: "#6d28d9" }]} height={180} unit="B ARS" />
-        </div>
-      </BlockSection>
-
-      {/* === FX === */}
+      {/* ================================================================
+          FX DE MERCADO
+      ================================================================ */}
       <BlockSection title="FX de Mercado" icon="💵" color="blue">
-        {!data.marketOpen && <div className="mb-4"><MarketClosedBadge /></div>}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-          {mep ? (
-            <DeltaKPICard label="USD MEP (Dólar Bolsa)" value={mep.precioUltimo} prefix="$" date={mep.fecha?.slice(0, 10)} color="#1c7ed6" positiveIsGood={false} decimals={2} />
-          ) : (
-            <PendingCard label="USD MEP" description="Dólar bolsa (USMEP) · MAE" source="MAE / Mercado cerrado" />
-          )}
-          {usdTransf ? (
-            <DeltaKPICard label="USD Transferencia" value={usdTransf.precioUltimo} prefix="$" date={usdTransf.fecha?.slice(0, 10)} color="#1971c2" positiveIsGood={false} decimals={2} />
-          ) : (
-            <PendingCard label="USD Transferencia" description="USD wire → ARS · MAE" source="MAE / Mercado cerrado" />
-          )}
-          <PendingCard label="USD CCL" description="Derivado GD30 ARS ÷ GD30 USD" source="Calculado de renta fija" />
-          <PendingCard label="Brecha MEP/Oficial" description="(MEP − Oficial) / Oficial" source="Calculado" unit="%" />
-        </div>
-        {data.forex.length > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-            {data.forex.filter((q) => q.precioUltimo > 0).map((q) => (
-              <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+          Tipos de cambio en tiempo real. Fuente: dolarapi.com
+        </p>
+
+        {fx ? (
+          <>
+            {/* KPI grid */}
+            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 mb-5">
+              <FxCard label="Oficial" rate={fx.oficial} />
+              <FxCard label="Mayorista" rate={fx.mayorista} />
+              <FxCard
+                label="MEP (Bolsa)"
+                rate={fx.mep}
+                brechaVsOficial={brecha(fx.mep, oficial)}
+              />
+              <FxCard
+                label="CCL"
+                rate={fx.ccl}
+                brechaVsOficial={brecha(fx.ccl, oficial)}
+              />
+              <FxCard
+                label="Blue"
+                rate={fx.blue}
+                brechaVsOficial={brecha(fx.blue, oficial)}
+              />
+              <FxCard
+                label="Cripto"
+                rate={fx.cripto}
+                brechaVsOficial={brecha(fx.cripto, oficial)}
+              />
+            </div>
+
+            {/* Brecha chart */}
+            <BrechaChart fx={fx} />
+          </>
+        ) : (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {["Oficial", "MEP", "CCL", "Blue"].map((l) => (
+              <PendingCard key={l} label={l} description="Tipo de cambio" source="dolarapi.com" />
             ))}
           </div>
         )}
       </BlockSection>
 
-      {/* === CAUCIONES === */}
-      <BlockSection title="Cauciones Bursátiles" icon="📋" color="emerald">
-        {!data.marketOpen && <div className="mb-4"><MarketClosedBadge /></div>}
+      {/* ================================================================
+          TASAS DE MERCADO
+      ================================================================ */}
+      <BlockSection title="Tasas de Mercado" icon="📈" color="orange">
         <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-          Tasas de préstamos garantizados con valores (TNA). Referencia de costo de fondeo del mercado de capitales.
+          Tasas de referencia del mercado monetario. Fuente: BCRA — datos.gob.ar
         </p>
-        {data.cauciones.length > 0 ? (
+
+        {tasas ? (
           <>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-              {cau1d  && <DeltaKPICard label="Caución 1 día"   value={cau1d.ultimaTasa}  suffix="% TNA" date={cau1d.fecha?.slice(0,10)}  color="#2f9e44" positiveIsGood={false} decimals={2} />}
-              {cau7d  && <DeltaKPICard label="Caución 7 días"  value={cau7d.ultimaTasa}  suffix="% TNA" date={cau7d.fecha?.slice(0,10)}  color="#2f9e44" positiveIsGood={false} decimals={2} />}
-              {cau30d && <DeltaKPICard label="Caución ~30 días" value={cau30d.ultimaTasa} suffix="% TNA" date={cau30d.fecha?.slice(0,10)} color="#2f9e44" positiveIsGood={false} decimals={2} />}
-            </div>
-            <div className="card card-dark p-5">
-              <h3 className="font-semibold text-slate-900 dark:text-slate-100 mb-4">Curva de Cauciones — Hoy</h3>
-              <CurvaBar
-                data={data.cauciones
-                  .filter((q) => q.ultimaTasa > 0)
-                  .map((q) => ({ plazo: q.plazo, tasa: q.ultimaTasa, vol: q.volumenAcumulado, ops: 0 }))
-                  .sort((a, b) => parseInt(a.plazo) - parseInt(b.plazo))}
-                height={200}
+              <DeltaKPICard
+                label="Política Monetaria"
+                value={lastVal(tasas.politicaMon)}
+                suffix="% TNA"
+                date={lastDate(tasas.politicaMon)}
+                delta={getDelta(tasas.politicaMon)}
+                color="#f59e0b"
+                positiveIsGood={false}
+                decimals={2}
               />
+              <DeltaKPICard
+                label="BADLAR"
+                value={lastVal(tasas.badlar)}
+                suffix="% TNA"
+                date={lastDate(tasas.badlar)}
+                delta={getDelta(tasas.badlar)}
+                color="#3b82f6"
+                positiveIsGood={false}
+                decimals={2}
+              />
+              <DeltaKPICard
+                label="PF 30-59 días"
+                value={lastVal(tasas.pf30)}
+                suffix="% TNA"
+                date={lastDate(tasas.pf30)}
+                delta={getDelta(tasas.pf30)}
+                color="#10b981"
+                positiveIsGood={false}
+                decimals={2}
+              />
+              <DeltaKPICard
+                label="Call Interbancario"
+                value={lastVal(tasas.call)}
+                suffix="% TNA"
+                date={lastDate(tasas.call)}
+                delta={getDelta(tasas.call)}
+                color="#8b5cf6"
+                positiveIsGood={false}
+                decimals={2}
+              />
+            </div>
+
+            <div className="card card-dark p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-slate-900 dark:text-slate-100">Evolución de Tasas</h3>
+                <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">% TNA</span>
+              </div>
+              <TasasChart data={tasas} period={period} />
             </div>
           </>
         ) : (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            {["1 día", "7 días", "14 días", "30 días"].map((p) => (
-              <PendingCard key={p} label={`Caución ${p}`} description="Tasas de cauciones bursátiles · MAE" source="Disponible en horario de mercado" unit="% TNA" />
+            {["Política Monetaria", "BADLAR", "PF 30d", "Call"].map((l) => (
+              <PendingCard key={l} label={l} description="Tasa de referencia" source="BCRA" unit="% TNA" />
             ))}
           </div>
         )}
       </BlockSection>
 
-      {/* === RENTA FIJA === */}
+      {/* ================================================================
+          REPOS MAE / CAUCIONES / RENTA FIJA — pendiente habilitación
+      ================================================================ */}
+      <BlockSection title="Repos MAE" icon="💴" color="violet">
+        <MAEPendingNotice />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {["Overnight (1d)", "3 días", "7 días", "Volumen"].map((l) => (
+            <PendingCard key={l} label={`Repo ${l}`} description="Tasa promedio ponderada MAE" source="Pendiente habilitación MAE" unit="% TNA" />
+          ))}
+        </div>
+      </BlockSection>
+
+      <BlockSection title="Cauciones Bursátiles" icon="📋" color="emerald">
+        <MAEPendingNotice />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {["1 día", "7 días", "14 días", "30 días"].map((p) => (
+            <PendingCard key={p} label={`Caución ${p}`} description="Tasa de caución bursátil" source="Pendiente habilitación MAE" unit="% TNA" />
+          ))}
+        </div>
+      </BlockSection>
+
       <BlockSection title="Renta Fija" icon="📊" color="orange">
-        {!data.marketOpen && <div className="mb-4"><MarketClosedBadge /></div>}
-        {data.rentafija.length > 0 ? (
-          <>
-            {sovereignBonds.length > 0 && (
-              <>
-                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Bonos Soberanos</p>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
-                  {sovereignBonds.map((q) => <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />)}
-                </div>
-              </>
-            )}
-            {lecaps.length > 0 && (
-              <>
-                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">LECAP / Tasa Fija</p>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
-                  {lecaps.map((q) => <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />)}
-                </div>
-              </>
-            )}
-            {sovereignBonds.length === 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                {data.rentafija.slice(0, 16).map((q) => <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />)}
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            {["GD30", "AL30", "AE38", "GD35", "GD41", "GD46", "LECAP", "LECER"].map((t) => (
-              <PendingCard key={t} label={t}
-                description={t.startsWith("GD") || t.startsWith("AL") || t.startsWith("AE") ? "Bono soberano en USD" : "Instrumento de tasa fija"}
-                source="Disponible en horario de mercado" unit="ARS"
-              />
-            ))}
-          </div>
-        )}
+        <MAEPendingNotice />
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          {["GD30", "AL30", "AE38", "GD35", "GD41", "GD46", "LECAP", "LECER"].map((t) => (
+            <PendingCard
+              key={t}
+              label={t}
+              description={t.startsWith("GD") || t.startsWith("AL") || t.startsWith("AE") ? "Bono soberano en USD" : "Instrumento de tasa fija"}
+              source="Pendiente habilitación MAE"
+              unit="ARS"
+            />
+          ))}
+        </div>
       </BlockSection>
     </div>
   );
-}
-
-// ---- Root export ----
-
-export function MercadoClient() {
-  const [data, setData]       = useState<MercadoData | null>(null);
-  const [error, setError]     = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const load = () => {
-    setLoading(true);
-    setError(null);
-    loadMercadoData()
-      .then(setData)
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (loading) return <LoadingSkeleton />;
-
-  if (error) {
-    const isCors = error.toLowerCase().includes("failed to fetch") || error.toLowerCase().includes("cors");
-    return (
-      <div className="space-y-6">
-        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Mercado</h1>
-        <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-6">
-          <p className="text-sm font-semibold text-red-700 dark:text-red-400 mb-2">Error al cargar datos del MAE</p>
-          <p className="text-xs text-red-600 dark:text-red-500 font-mono break-all mb-3">{error}</p>
-          {isCors && (
-            <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
-              ⚠️ Error de CORS — MAE no permite requests directos desde el browser. Contactar a A3 para habilitar CORS o whitelist de IPs de Vercel.
-            </p>
-          )}
-          <button onClick={load} className="text-xs bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 px-3 py-1.5 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors">
-            Reintentar
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!data) return null;
-  return <MercadoContent data={data} />;
 }
