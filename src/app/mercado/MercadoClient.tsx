@@ -355,7 +355,7 @@ function MAEPendingNotice() {
 
 // ---- BYMA bond card ----
 
-function BondCard({ q }: { q: BymaQuote }) {
+function BondCard({ q, onClick }: { q: BymaQuote; onClick?: () => void }) {
   const isUp   = (q.changePercent ?? 0) > 0;
   const isDown = (q.changePercent ?? 0) < 0;
   const pct    = q.changePercent;
@@ -369,8 +369,13 @@ function BondCard({ q }: { q: BymaQuote }) {
       })
     : "—";
 
+  const Tag = onClick ? "button" : "div";
+
   return (
-    <div className="card card-dark p-4">
+    <Tag
+      className={`card card-dark p-4 text-left w-full ${onClick ? "hover:ring-2 hover:ring-blue-400/40 cursor-pointer transition-all" : ""}`}
+      onClick={onClick}
+    >
       <div className="flex items-start justify-between mb-1.5 gap-1">
         <span className="text-xs font-bold text-slate-300 font-mono">{q.symbol}</span>
         <span className={`text-xs font-semibold shrink-0 tabular-nums ${
@@ -403,6 +408,425 @@ function BondCard({ q }: { q: BymaQuote }) {
             <span>Vol {(q.volumeAmount / 1e6).toFixed(0)}M</span>
           </>
         )}
+        {onClick && (
+          <span className="ml-auto text-[10px] text-blue-400/70 shrink-0">ver detalle →</span>
+        )}
+      </div>
+    </Tag>
+  );
+}
+
+// ---- ON Detail: TIR solver + cash flow builder ----
+
+/**
+ * Try to extract the annual coupon rate (%) from a bond description string.
+ * Common patterns: "YPF 8.875%", "PAMPA CLASE XI 7% 2029", "TNA 6.50%"
+ * We look for the first X.XX% pattern where X is in a plausible coupon range (0.5 – 30%).
+ */
+function parseCouponFromDesc(description: string): number | null {
+  // Match decimal or integer percentage: e.g. "8.875%", "7%", "6.5%"
+  const matches = description.matchAll(/(\d+(?:[.,]\d+)?)\s*%/g);
+  for (const m of matches) {
+    const rate = parseFloat(m[1].replace(",", "."));
+    if (rate >= 0.5 && rate <= 30) return rate;   // plausible coupon range
+  }
+  return null;
+}
+
+interface CashFlow { fecha: string; cupon: number; amortizacion: number; total: number; }
+
+/**
+ * Build an approximate coupon schedule.
+ * Uses maturityDate as anchor for the last payment; distributes prior payments
+ * evenly going backward from maturity.
+ * freq: payments per year (1 = annual, 2 = semi-annual, 4 = quarterly)
+ */
+function buildCashFlows(
+  couponPct: number,
+  maturityDate: string,
+  freq: number,
+): CashFlow[] {
+  const matDate  = new Date(maturityDate + "T12:00:00Z");
+  const today    = new Date();
+  const totalDays = (matDate.getTime() - today.getTime()) / 86_400_000;
+  if (totalDays <= 0) return [];
+
+  const yearsToMat = totalDays / 365;
+  const periods    = Math.max(1, Math.round(yearsToMat * freq));
+  const daysPerPeriod = totalDays / periods;
+  const couponPerPeriod = (couponPct / 100) * 100 / freq; // on 100 VN
+
+  const flows: CashFlow[] = [];
+  for (let i = 1; i <= periods; i++) {
+    const daysOffset = Math.round(i * daysPerPeriod);
+    const d = new Date(today.getTime() + daysOffset * 86_400_000);
+    const fecha = d.toISOString().split("T")[0];
+    const isLast = i === periods;
+    flows.push({
+      fecha,
+      cupon:         couponPerPeriod,
+      amortizacion:  isLast ? 100 : 0,
+      total:         couponPerPeriod + (isLast ? 100 : 0),
+    });
+  }
+  return flows;
+}
+
+/**
+ * Newton-Raphson IRR solver.
+ * cashflows: array of {t (years), cf (positive = receipt)}
+ * price:     bond purchase price (positive number, we subtract it as initial outflow)
+ */
+function solveTIR(price: number, cashflows: CashFlow[], maturityDate: string): number | null {
+  if (cashflows.length === 0 || price <= 0) return null;
+
+  const today = new Date();
+  const tFlows = cashflows.map((c) => {
+    const d = new Date(c.fecha + "T12:00:00Z");
+    const t = (d.getTime() - today.getTime()) / (365.25 * 86_400_000);
+    return { t, cf: c.total };
+  });
+
+  let r = 0.10; // initial guess
+  for (let iter = 0; iter < 200; iter++) {
+    let npv = -price, dnpv = 0;
+    for (const { t, cf } of tFlows) {
+      if (t <= 0) continue;
+      const disc = Math.pow(1 + r, t);
+      npv  += cf / disc;
+      dnpv -= t * cf / (disc * (1 + r));
+    }
+    if (Math.abs(dnpv) < 1e-14) break;
+    const delta = npv / dnpv;
+    r -= delta;
+    if (Math.abs(delta) < 1e-9) break;
+    if (r < -0.99 || r > 100) return null; // diverged
+  }
+  return r * 100; // return as %
+}
+
+// ---- ON Detail Modal ----
+
+function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () => void }) {
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  // --- Price formatting ---
+  const price = q.lastPrice;
+  const priceStr = price != null
+    ? price.toLocaleString("es-AR", {
+        minimumFractionDigits: price >= 100 ? 0 : 2,
+        maximumFractionDigits: price >= 100 ? 0 : 2,
+      })
+    : "—";
+
+  const pct   = q.changePercent;
+  const isUp  = (pct ?? 0) > 0;
+  const isDown = (pct ?? 0) < 0;
+
+  // --- Maturity display ---
+  const matStr = q.maturityDate
+    ? new Date(q.maturityDate + "T12:00:00Z").toLocaleDateString("es-AR", {
+        day: "2-digit", month: "short", year: "numeric",
+      })
+    : null;
+
+  // --- TIR calculation ---
+  // Priority: 1. BYMA provides yieldToMaturity → use it
+  //           2. Coupon parseable → Newton-Raphson
+  //           3. Zero-coupon approx (price + maturity only)
+  //           4. null
+  let tirValue: number | null = null;
+  let tirLabel  = "";
+  let tirNote   = "";
+  let cashFlows: CashFlow[] = [];
+  let tirMethod: "byma" | "computed" | "approx" | "none" = "none";
+
+  if (q.yieldToMaturity != null && q.yieldToMaturity > 0) {
+    tirValue = q.yieldToMaturity;
+    tirLabel = "TIR (BYMA)";
+    tirNote  = "Calculada por BYMA.";
+    tirMethod = "byma";
+  } else if (price != null && q.maturityDate && q.daysToMaturity && q.daysToMaturity > 0) {
+    // Try to get coupon rate: from field, then parse description
+    const couponPct = q.couponRate ?? parseCouponFromDesc(q.description);
+    if (couponPct != null) {
+      // USD ONs: semi-annual; ARS ONs: quarterly or annual (use 2 as default)
+      const freq = q.couponFrequency ?? (q.currency === "USD" ? 2 : 1);
+      cashFlows = buildCashFlows(couponPct, q.maturityDate, freq);
+      const computed = solveTIR(price, cashFlows, q.maturityDate);
+      if (computed != null && computed > -99) {
+        tirValue  = computed;
+        tirLabel  = couponPct === q.couponRate ? "TIR estimada" : "TIR estimada *";
+        tirNote   = couponPct === q.couponRate
+          ? `Calculada con cupón ${couponPct}% (${freq === 2 ? "semestral" : freq === 4 ? "trimestral" : "anual"}).`
+          : `Calculada con cupón ${couponPct}% parseado de la descripción. Los flujos son aproximados — verificar con el prospecto.`;
+        tirMethod = "computed";
+        if (couponPct !== q.couponRate) tirLabel = "TIR estimada *";
+      }
+    } else {
+      // Pure zero-coupon approximation: TIR = (100/price)^(365/days) - 1
+      const years = q.daysToMaturity / 365;
+      tirValue  = (Math.pow(100 / price, 1 / years) - 1) * 100;
+      tirLabel  = "Rendimiento estimado";
+      tirNote   = "Sin datos de cupón — asume bono descuento (bullet). Puede diferir significativamente del rendimiento real si paga cupones.";
+      tirMethod = "approx";
+    }
+  }
+
+  // --- Frequency label helper ---
+  const freqLabel = (freq: number) =>
+    freq === 2 ? "semestral" : freq === 4 ? "trimestral" : freq === 12 ? "mensual" : "anual";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 backdrop-blur-sm p-4 pt-8 pb-8"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-2xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl ring-1 ring-slate-200 dark:ring-slate-700"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between p-5 border-b border-slate-200 dark:border-slate-700">
+          <div className="flex-1 min-w-0 pr-4">
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <span className="font-mono font-bold text-xl text-slate-900 dark:text-slate-100">{q.symbol}</span>
+              {q.currency && (
+                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                  q.currency === "USD"
+                    ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
+                    : "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400"
+                }`}>{q.currency}</span>
+              )}
+              {q.settlementType && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500">{q.settlementType}</span>
+              )}
+              {q.securityType && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500">{q.securityType}</span>
+              )}
+            </div>
+            <p className="text-sm text-slate-600 dark:text-slate-400 leading-snug line-clamp-2">{q.description}</p>
+            {q.issuer && q.issuer !== q.description && (
+              <p className="text-xs text-slate-500 mt-0.5">Emisor: {q.issuer}</p>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="shrink-0 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+            aria-label="Cerrar"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          {/* Market snapshot */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {/* Current price */}
+            <div className="col-span-2 sm:col-span-1 bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Precio actual</p>
+              <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">{priceStr}</p>
+              <span className={`text-sm font-semibold tabular-nums ${
+                pct == null  ? "text-slate-500"
+                : isUp       ? "text-emerald-500"
+                : isDown     ? "text-red-500"
+                :              "text-slate-400"
+              }`}>
+                {pct == null ? "—" : `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`}
+              </span>
+              {q.previousClosingPrice != null && (
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Cierre ant.: {q.previousClosingPrice.toLocaleString("es-AR", {
+                    minimumFractionDigits: q.previousClosingPrice >= 100 ? 0 : 2,
+                    maximumFractionDigits: q.previousClosingPrice >= 100 ? 0 : 2,
+                  })}
+                </p>
+              )}
+            </div>
+
+            {/* Intraday range + volume */}
+            <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4 space-y-2">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500">Rango del día</p>
+              <div className="space-y-1 text-xs tabular-nums text-slate-700 dark:text-slate-300">
+                {q.maxPrice != null && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Máx</span>
+                    <span className="font-medium">{q.maxPrice.toLocaleString("es-AR", { maximumFractionDigits: 2 })}</span>
+                  </div>
+                )}
+                {q.minPrice != null && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Mín</span>
+                    <span className="font-medium">{q.minPrice.toLocaleString("es-AR", { maximumFractionDigits: 2 })}</span>
+                  </div>
+                )}
+                {q.openingPrice != null && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Apertura</span>
+                    <span className="font-medium">{q.openingPrice.toLocaleString("es-AR", { maximumFractionDigits: 2 })}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Maturity */}
+            <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Vencimiento</p>
+              {matStr ? (
+                <>
+                  <p className="text-sm font-bold text-slate-900 dark:text-slate-100 leading-tight">{matStr}</p>
+                  {q.daysToMaturity != null && (
+                    <p className="text-xs text-slate-500 mt-1">
+                      {q.daysToMaturity > 365
+                        ? `${(q.daysToMaturity / 365).toFixed(1)} años`
+                        : `${q.daysToMaturity} días`}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-slate-400">—</p>
+              )}
+              {q.volumeAmount != null && q.volumeAmount > 0 && (
+                <p className="text-xs text-slate-500 mt-2">
+                  Vol: {q.volumeAmount >= 1e9
+                    ? `${(q.volumeAmount / 1e9).toFixed(2)} MM`
+                    : `${(q.volumeAmount / 1e6).toFixed(0)} M`} {q.currency ?? "ARS"}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* TIR section */}
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">TIR / Rendimiento</h3>
+              {tirMethod === "byma" && (
+                <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded-full font-medium">BYMA</span>
+              )}
+              {tirMethod === "computed" && (
+                <span className="text-[10px] bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded-full font-medium">Estimada</span>
+              )}
+              {tirMethod === "approx" && (
+                <span className="text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full font-medium">Aprox</span>
+              )}
+            </div>
+            <div className="px-4 py-3">
+              {tirValue != null && tirValue > -99 ? (
+                <>
+                  <p className="text-3xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+                    {tirValue.toFixed(2)}<span className="text-xl font-semibold text-slate-400 ml-1">%</span>
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">{tirLabel}</p>
+                  {tirNote && <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 leading-relaxed">{tirNote}</p>}
+                </>
+              ) : (
+                <p className="text-sm text-slate-400 py-1">No disponible — precio o vencimiento faltante.</p>
+              )}
+            </div>
+          </div>
+
+          {/* Cash flows section */}
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Flujos de Caja <span className="text-slate-400 font-normal">(sobre 100 VN)</span></h3>
+              {cashFlows.length > 0 && (
+                <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-500 px-2 py-0.5 rounded-full">
+                  {q.couponFrequency != null ? freqLabel(q.couponFrequency) : q.currency === "USD" ? "semestral*" : "anual*"}
+                </span>
+              )}
+            </div>
+
+            {cashFlows.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-slate-500 border-b border-slate-100 dark:border-slate-800">
+                      <th className="text-left px-4 py-2 font-medium">Fecha</th>
+                      <th className="text-right px-3 py-2 font-medium">Cupón</th>
+                      <th className="text-right px-3 py-2 font-medium">Amort.</th>
+                      <th className="text-right px-4 py-2 font-medium">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cashFlows.map((cf, i) => (
+                      <tr key={i} className={`border-b border-slate-50 dark:border-slate-800/60 ${
+                        i === cashFlows.length - 1
+                          ? "bg-emerald-50 dark:bg-emerald-900/10 font-semibold text-slate-900 dark:text-slate-100"
+                          : "text-slate-700 dark:text-slate-300"
+                      }`}>
+                        <td className="px-4 py-2 font-mono">
+                          {cf.fecha}
+                          {i === cashFlows.length - 1 && (
+                            <span className="ml-2 text-[9px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 px-1.5 py-0.5 rounded">final</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {cf.cupon > 0 ? cf.cupon.toFixed(4) : "—"}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {cf.amortizacion > 0 ? cf.amortizacion.toFixed(2) : "—"}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums font-medium">
+                          {cf.total.toFixed(4)}
+                        </td>
+                      </tr>
+                    ))}
+                    {/* Total row */}
+                    <tr className="bg-slate-50 dark:bg-slate-800/40 font-semibold text-slate-900 dark:text-slate-100">
+                      <td className="px-4 py-2 text-xs text-slate-500 font-normal">Total recibido</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-xs">
+                        {cashFlows.reduce((s, c) => s + c.cupon, 0).toFixed(2)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-xs">100.00</td>
+                      <td className="px-4 py-2 text-right tabular-nums">
+                        {cashFlows.reduce((s, c) => s + c.total, 0).toFixed(2)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p className="text-[10px] text-slate-400 px-4 py-2 border-t border-slate-100 dark:border-slate-800">
+                  * Fechas estimadas según días al vencimiento. La frecuencia y el monto exacto de cada pago
+                  pueden diferir según el prospecto de la ON.
+                  {tirMethod === "computed" && " Cupón extraído de la descripción del instrumento."}
+                </p>
+              </div>
+            ) : (
+              <div className="px-4 py-5">
+                {q.maturityDate ? (
+                  <div className="space-y-3">
+                    {/* Only maturity date known */}
+                    <div className="flex justify-between text-xs border-b border-dashed border-slate-200 dark:border-slate-700 pb-3">
+                      <span className="text-slate-500">Vencimiento / Amort. final</span>
+                      <div className="text-right">
+                        <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{q.maturityDate}</span>
+                        <span className="ml-2 text-slate-500 tabular-nums">100.00</span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      El calendario de cupones y amortizaciones no está disponible en la API gratuita de BYMA.
+                      Consultá el prospecto en <span className="font-medium text-blue-500">cnv.gob.ar</span> o en la hoja técnica del bono en BYMA.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400">Flujos no disponibles — fecha de vencimiento desconocida.</p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Disclaimer */}
+          <p className="text-[10px] text-slate-400 leading-relaxed">
+            Datos de mercado: BYMA (open.bymadata.com.ar). La TIR y los flujos mostrados son estimaciones
+            con fines informativos — no constituyen asesoramiento de inversión.
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -418,12 +842,13 @@ async function fetchByma(): Promise<BymaData> {
 }
 
 export function MercadoClient() {
-  const [fx, setFx]           = useState<DolarSnapshot | null>(null);
-  const [tasas, setTasas]     = useState<TasasData | null>(null);
-  const [byma, setByma]       = useState<BymaData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState<string | null>(null);
-  const [period, setPeriod]   = useState<Period>("6m");
+  const [fx, setFx]               = useState<DolarSnapshot | null>(null);
+  const [tasas, setTasas]         = useState<TasasData | null>(null);
+  const [byma, setByma]           = useState<BymaData | null>(null);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState<string | null>(null);
+  const [period, setPeriod]       = useState<Period>("6m");
+  const [selectedON, setSelectedON] = useState<BymaQuote | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -465,6 +890,9 @@ export function MercadoClient() {
 
   return (
     <div className="space-y-10">
+      {/* ON Detail Modal */}
+      {selectedON && <ONDetailModal quote={selectedON} onClose={() => setSelectedON(null)} />}
+
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
@@ -721,16 +1149,16 @@ export function MercadoClient() {
               <>
                 <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">USD</p>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 mb-5">
-                  {usdOns.map((q) => <BondCard key={q.symbol} q={q} />)}
+                  {usdOns.map((q) => <BondCard key={q.symbol} q={q} onClick={() => setSelectedON(q)} />)}
                 </div>
                 <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">ARS</p>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  {arsOns.map((q) => <BondCard key={q.symbol} q={q} />)}
+                  {arsOns.map((q) => <BondCard key={q.symbol} q={q} onClick={() => setSelectedON(q)} />)}
                 </div>
               </>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                {display.map((q) => <BondCard key={q.symbol} q={q} />)}
+                {display.map((q) => <BondCard key={q.symbol} q={q} onClick={() => setSelectedON(q)} />)}
               </div>
             )}
           </BlockSection>

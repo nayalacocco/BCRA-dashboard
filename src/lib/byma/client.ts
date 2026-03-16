@@ -61,6 +61,12 @@ export interface BymaQuote {
   maturityDate:         string | null;   // ISO date for bonds
   daysToMaturity:       number | null;
   securityType:         string | null;   // "GO"=govt bond, "CS"=stock, "CD"=CEDEAR, "CORP"=ON
+  // Additional fields (present in some BYMA responses, null when not provided)
+  couponRate:           number | null;   // Annual coupon rate % (e.g. 8.875)
+  yieldToMaturity:      number | null;   // Pre-computed TIR by BYMA (if available)
+  issuer:               string | null;   // Issuer name / empresa
+  nominalValue:         number | null;   // Face value (usually 100 or 1000)
+  couponFrequency:      number | null;   // Coupon payments per year (1, 2, 4)
 }
 
 export interface BymaIndex {
@@ -174,6 +180,12 @@ function normalizeQuote(raw: Record<string, any>): BymaQuote {
     maturityDate:         raw.maturityDate ?? null,
     daysToMaturity:       raw.daysToMaturity ?? null,
     securityType:         raw.securityType ?? null,
+    // Additional fields — capture if BYMA includes them in the response
+    couponRate:           raw.couponRate      != null ? Number(raw.couponRate)     : (raw.couponInterestRate != null ? Number(raw.couponInterestRate) : null),
+    yieldToMaturity:      raw.yieldToMaturity != null ? Number(raw.yieldToMaturity): (raw.tir               != null ? Number(raw.tir)               : null),
+    issuer:               raw.issuer          ?? raw.issuerName          ?? null,
+    nominalValue:         raw.nominalValue    != null ? Number(raw.nominalValue)   : null,
+    couponFrequency:      raw.couponFrequency != null ? Number(raw.couponFrequency): null,
   };
 }
 
