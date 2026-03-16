@@ -7,14 +7,13 @@ GitHub/Microsoft IP ranges (unlike Vercel/AWS Lambda which are blocked).
 
 Data flow:
   1. Load existing snapshot  (to preserve repo history)
-  2. Fetch today's /repo     (all plazos for today's date)
-  3. Upsert today into repoHistory, trim to MAX_HISTORY_DAYS
+  2. Fetch repo history      (last 90 days if first run, else last 7 days)
+  3. Upsert into repoHistory, trim to MAX_HISTORY_DAYS
   4. Fetch /cauciones, /rentafija, /forex   (today's market snapshots)
   5. Write new snapshot to public/data/mae-snapshot.json
-
-The snapshot is then served by Next.js via
-  /api/mae/mercado  →  reads raw.githubusercontent.com/…/mae-snapshot.json
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -22,6 +21,7 @@ import sys
 import datetime
 import requests
 from pathlib import Path
+from typing import Dict, List, Any, Optional
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BASE_URL         = "https://api.mae.com.ar/MarketData/v1"
@@ -40,9 +40,9 @@ def get_api_key() -> str:
     return key
 
 
-def mae_get(path: str, params: dict, key: str) -> object:
+def mae_get(path: str, params: dict, key: str) -> Any:
     """GET a MAE endpoint, raise on non-200."""
-    url = f"{BASE_URL}{path}"
+    url = "{}{}".format(BASE_URL, path)
     resp = requests.get(
         url,
         params=params,
@@ -57,6 +57,10 @@ def today_iso() -> str:
     return datetime.date.today().isoformat()
 
 
+def days_ago_iso(n: int) -> str:
+    return (datetime.date.today() - datetime.timedelta(days=n)).isoformat()
+
+
 def utcnow_iso() -> str:
     return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -67,10 +71,10 @@ def load_snapshot() -> dict:
     """Load existing snapshot or return a blank skeleton."""
     if SNAPSHOT_PATH.exists():
         try:
-            with open(SNAPSHOT_PATH, encoding="utf-8") as f:
+            with open(str(SNAPSHOT_PATH), encoding="utf-8") as f:
                 return json.load(f)
         except Exception as exc:
-            print(f"Warning: could not parse existing snapshot ({exc}), starting fresh",
+            print("Warning: could not parse existing snapshot ({}), starting fresh".format(exc),
                   file=sys.stderr)
     return {
         "fetchedAt":   None,
@@ -84,61 +88,75 @@ def load_snapshot() -> dict:
 
 def save_snapshot(snap: dict) -> None:
     SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(SNAPSHOT_PATH, "w", encoding="utf-8") as f:
-        # Compact JSON — keeps file small (~30 KB when full)
+    with open(str(SNAPSHOT_PATH), "w", encoding="utf-8") as f:
         json.dump(snap, f, ensure_ascii=False, separators=(",", ":"))
     size_kb = SNAPSHOT_PATH.stat().st_size / 1024
-    print(f"Snapshot saved → {SNAPSHOT_PATH}  ({size_kb:.1f} KB)")
+    print("Snapshot saved → {}  ({:.1f} KB)".format(SNAPSHOT_PATH, size_kb))
 
 
 # ── MAE fetchers ──────────────────────────────────────────────────────────────
 
-def fetch_today_repos(key: str, today: str) -> dict[str, dict]:
+def fetch_repo_range(key: str, desde: str, hasta: str) -> List[dict]:
     """
-    Fetch /repo for today only.  Returns a dict keyed by normalized plazo ("001", "003" …).
-    Returns {} on failure (market closed, WAF hiccup, etc.).
+    Fetch /repo for a date range (paginated, up to 10 pages).
+    Returns list of raw records from MAE.
     """
-    try:
-        records = mae_get(
-            "/mercado/cotizaciones/repo",
-            {"fechaDesde": today, "fechaHasta": today, "pageNumber": 1},
-            key,
-        )
-    except Exception as exc:
-        print(f"  repo fetch failed: {exc}", file=sys.stderr)
-        return {}
+    all_records: List[dict] = []
+    for page in range(1, 11):
+        try:
+            batch = mae_get(
+                "/mercado/cotizaciones/repo",
+                {"fechaDesde": desde, "fechaHasta": hasta, "pageNumber": page},
+                key,
+            )
+        except Exception as exc:
+            print("  repo page {} failed: {}".format(page, exc), file=sys.stderr)
+            break
 
-    if not isinstance(records, list) or len(records) == 0:
-        return {}
+        if not isinstance(batch, list) or len(batch) == 0:
+            break
+        all_records.extend(batch)
+        if len(batch) < 50:
+            break  # last page
 
-    plazos: dict[str, dict] = {}
+    return all_records
+
+
+def parse_repo_records(records: List[dict]) -> Dict[str, dict]:
+    """
+    Convert a flat list of MAE repo records into a dict keyed by fecha,
+    each value being a dict of plazo → {tasa, vol, ops}.
+    """
+    by_date: Dict[str, Dict[str, dict]] = {}
     for r in records:
-        # MAE may send "1" or "001" — normalize to 3-char zero-padded string
+        fecha = str(r.get("fecha", ""))[:10]
+        if not fecha:
+            continue
+        # Normalize plazo to 3-char zero-padded string
         plazo = str(r.get("plazo", "")).strip().zfill(3)
         if not plazo or plazo == "000":
             continue
-        plazos[plazo] = {
+        if fecha not in by_date:
+            by_date[fecha] = {}
+        by_date[fecha][plazo] = {
             "tasa": round(float(r.get("tasaPP", 0)), 4),
-            "vol":  float(r.get("volumen",       0)),
+            "vol":  float(r.get("volumen",        0)),
             "ops":  int(  r.get("cantOperaciones", 0)),
         }
-    return plazos
+    return by_date
 
 
 def fetch_endpoint(endpoint: str, key: str) -> list:
-    """Fetch a snapshot endpoint (/cauciones, /rentafija, /forex). Returns [] on error."""
+    """Fetch a snapshot endpoint. Returns [] on error or market closed."""
     try:
-        data = mae_get(f"/mercado/cotizaciones/{endpoint}", {"pageNumber": 1}, key)
+        data = mae_get("/mercado/cotizaciones/{}".format(endpoint), {"pageNumber": 1}, key)
         return data if isinstance(data, list) else []
     except Exception as exc:
-        print(f"  {endpoint} fetch failed: {exc}", file=sys.stderr)
+        print("  {} fetch failed: {}".format(endpoint, exc), file=sys.stderr)
         return []
 
 
-# ── Build latestCurve ─────────────────────────────────────────────────────────
-
-def build_latest_curve(plazos: dict[str, dict]) -> list[dict]:
-    """Convert today's plazos dict to the RepoTermPoint[] format expected by Next.js."""
+def build_latest_curve(plazos: dict) -> List[dict]:
     return [
         {"plazo": p, "tasa": d["tasa"], "vol": d["vol"], "ops": d["ops"]}
         for p, d in sorted(plazos.items())
@@ -150,53 +168,77 @@ def build_latest_curve(plazos: dict[str, dict]) -> list[dict]:
 def main() -> None:
     key   = get_api_key()
     today = today_iso()
-    print(f"[fetch-mae] {utcnow_iso()}  date={today}")
+    print("[fetch-mae] {}  date={}".format(utcnow_iso(), today))
 
     # 1. Load existing snapshot
     snap         = load_snapshot()
-    repo_history: list[dict] = snap.get("repoHistory", [])
+    repo_history: List[dict] = snap.get("repoHistory", [])
 
-    # 2. Today's repos
-    print("Fetching /repo …")
-    today_plazos = fetch_today_repos(key, today)
-    if today_plazos:
-        print(f"  plazos: {list(today_plazos.keys())}")
-        today_entry = {"fecha": today, "plazos": today_plazos}
+    # 2. Decide how far back to fetch repo history
+    existing_dates = {d["fecha"] for d in repo_history}
+    if len(existing_dates) < 5:
+        # First run (or nearly empty) — fetch full 90-day history
+        desde = days_ago_iso(MAX_HISTORY_DAYS)
+        print("Fetching repo history (last 90 days: {} → {}) …".format(desde, today))
+    else:
+        # Incremental: fetch last 7 days to catch any missed days + today
+        desde = days_ago_iso(7)
+        print("Fetching repo history (last 7 days: {} → {}) …".format(desde, today))
 
-        # Upsert: replace if today already in history
-        idx = next((i for i, d in enumerate(repo_history) if d["fecha"] == today), None)
-        if idx is not None:
-            repo_history[idx] = today_entry
-        else:
-            repo_history.append(today_entry)
+    raw_records = fetch_repo_range(key, desde, today)
+    print("  {} raw records returned".format(len(raw_records)))
 
-        # Sort chronologically and keep last 90 days
-        repo_history.sort(key=lambda x: x["fecha"])
+    if raw_records:
+        by_date = parse_repo_records(raw_records)
+        print("  dates with data: {}".format(sorted(by_date.keys())))
+
+        # Upsert each date
+        history_map: Dict[str, dict] = {d["fecha"]: d for d in repo_history}
+        for fecha, plazos in by_date.items():
+            history_map[fecha] = {"fecha": fecha, "plazos": plazos}
+
+        # Sort and trim to MAX_HISTORY_DAYS
+        repo_history = sorted(history_map.values(), key=lambda x: x["fecha"])
         repo_history = repo_history[-MAX_HISTORY_DAYS:]
     else:
-        print("  no repo data (market closed or holiday)")
+        print("  no repo data returned (WAF block, holiday, or market closed)")
 
-    # 3. Today's snapshots
+    # 3. Today's market snapshots (will be empty after market close — that's OK)
     print("Fetching /cauciones …")
     cauciones = fetch_endpoint("cauciones", key)
-    print(f"  {len(cauciones)} items")
+    print("  {} items".format(len(cauciones)))
 
     print("Fetching /rentafija …")
     rentafija = fetch_endpoint("rentafija", key)
-    print(f"  {len(rentafija)} items")
+    print("  {} items".format(len(rentafija)))
 
     print("Fetching /forex …")
     forex = fetch_endpoint("forex", key)
-    print(f"  {len(forex)} items")
+    print("  {} items".format(len(forex)))
 
-    # 4. Build latestCurve  (prefer today's; fall back to previous)
-    latest_curve = (
-        build_latest_curve(today_plazos)
-        if today_plazos
-        else snap.get("latestCurve", [])
-    )
+    # 4. Build latestCurve from most recent repo day
+    if repo_history:
+        latest_day_plazos = repo_history[-1]["plazos"]
+        latest_curve = build_latest_curve(latest_day_plazos)
+    else:
+        latest_curve = snap.get("latestCurve", [])
 
-    # 5. Write
+    # 5. If cauciones/rentafija/forex are empty, keep previous snapshot data
+    #    so the UI still shows closing prices after market close
+    if not cauciones:
+        cauciones = snap.get("cauciones", [])
+        if cauciones:
+            print("  cauciones: using previous snapshot ({} items)".format(len(cauciones)))
+    if not rentafija:
+        rentafija = snap.get("rentafija", [])
+        if rentafija:
+            print("  rentafija: using previous snapshot ({} items)".format(len(rentafija)))
+    if not forex:
+        forex = snap.get("forex", [])
+        if forex:
+            print("  forex: using previous snapshot ({} items)".format(len(forex)))
+
+    # 6. Write
     new_snap = {
         "fetchedAt":   utcnow_iso(),
         "repoHistory": repo_history,
@@ -206,10 +248,9 @@ def main() -> None:
         "latestCurve": latest_curve,
     }
     save_snapshot(new_snap)
-    print(f"History: {len(repo_history)} days  |  "
-          f"rentafija: {len(rentafija)}  |  "
-          f"cauciones: {len(cauciones)}  |  "
-          f"forex: {len(forex)}")
+    print("History: {} days  |  rentafija: {}  |  cauciones: {}  |  forex: {}".format(
+        len(repo_history), len(rentafija), len(cauciones), len(forex)
+    ))
 
 
 if __name__ == "__main__":
