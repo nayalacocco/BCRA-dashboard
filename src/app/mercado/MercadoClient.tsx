@@ -44,42 +44,39 @@ interface TasasData {
   pf30:         SeriesPoint[];
 }
 
-// ---- BCRA tasas fetcher (via our existing server proxy) ----
+// ---- BCRA tasas fetcher — each series fetched separately ----
+// Uses sort=desc&limit=240 (20 years of monthly data) then reverses for chronological order.
+// Fetching separately avoids column-alignment issues when series have different start dates.
+// (e.g. Política Monetaria only exists from 2019 — would be invisible in asc limit=200 window)
+
+async function fetchOneSeries(id: string, limit = 240): Promise<SeriesPoint[]> {
+  const url = `https://apis.datos.gob.ar/series/api/series/?ids=${id}&limit=${limit}&sort=desc&format=json`;
+  const res = await fetch(url, { headers: { "Accept": "application/json" } });
+  if (!res.ok) throw new Error(`datos.gob.ar ${res.status} for ${id}`);
+  const json = await res.json();
+  const rows: [string, number | null][] = json.data ?? [];
+  const pts: SeriesPoint[] = [];
+  for (const [fecha, val] of rows) {
+    if (val != null) pts.push({ fecha, valor: val });
+  }
+  pts.reverse(); // restore chronological order for charts
+  return pts;
+}
 
 async function fetchTasas(): Promise<TasasData> {
-  // IDs: 7=BADLAR, 89.1 series via datos.gob.ar
-  // We reuse the BCRA API proxy already in the app
-  const ids = [
-    "89.1_TIB_0_0_20",    // BADLAR
-    "89.1_TIC_0_0_18",    // Call
-    "89.1_IR_BCRARIA_0_M_34", // Política Monetaria
-    "89.1_TIPF35D_0_0_35", // PF 30-59d
-  ];
+  const [badlarRes, callRes, pmRes, pf30Res] = await Promise.allSettled([
+    fetchOneSeries("89.1_TIB_0_0_20"),         // BADLAR privada
+    fetchOneSeries("89.1_TIC_0_0_18"),          // Call interbancario
+    fetchOneSeries("89.1_IR_BCRARIA_0_M_34"),   // Política Monetaria (desde 2019)
+    fetchOneSeries("89.1_TIPF35D_0_0_35"),      // PF 30-59 días
+  ]);
 
-  const res = await fetch(
-    `https://apis.datos.gob.ar/series/api/series/?ids=${ids.join(",")}&limit=200&format=json`,
-    { headers: { "Accept": "application/json" } }
-  );
-  if (!res.ok) throw new Error(`datos.gob.ar ${res.status}`);
-  const json = await res.json();
-
-  // datos.gob.ar returns data as rows: [date, val0, val1, val2, val3]
-  const rows: [string, number | null, number | null, number | null, number | null][] =
-    json.data ?? [];
-
-  const badlar:      SeriesPoint[] = [];
-  const call:        SeriesPoint[] = [];
-  const politicaMon: SeriesPoint[] = [];
-  const pf30:        SeriesPoint[] = [];
-
-  for (const [fecha, v0, v1, v2, v3] of rows) {
-    if (v0 != null) badlar.push({ fecha, valor: v0 });
-    if (v1 != null) call.push({ fecha, valor: v1 });
-    if (v2 != null) politicaMon.push({ fecha, valor: v2 });
-    if (v3 != null) pf30.push({ fecha, valor: v3 });
-  }
-
-  return { badlar, call, politicaMon, pf30 };
+  return {
+    badlar:      badlarRes.status  === "fulfilled" ? badlarRes.value  : [],
+    call:        callRes.status    === "fulfilled" ? callRes.value    : [],
+    politicaMon: pmRes.status      === "fulfilled" ? pmRes.value      : [],
+    pf30:        pf30Res.status    === "fulfilled" ? pf30Res.value    : [],
+  };
 }
 
 // ---- Helpers ----
@@ -104,6 +101,13 @@ function fmt(v: string) {
 
 // ---- FX Rate card ----
 
+function fmtPeso(v: number | null) {
+  if (v == null) return "—";
+  // Use compact format without decimals for large numbers (≥1000)
+  if (v >= 1000) return `$${v.toLocaleString("es-AR", { maximumFractionDigits: 0 })}`;
+  return `$${v.toFixed(2)}`;
+}
+
 function FxCard({
   label,
   rate,
@@ -115,34 +119,41 @@ function FxCard({
 }) {
   if (!rate) return <PendingCard label={label} description="Sin datos" source="dolarapi.com" />;
 
+  const hora = new Date(rate.fechaActualizacion).toLocaleTimeString("es-AR", {
+    hour: "2-digit", minute: "2-digit",
+  });
+
   return (
-    <div className="card card-dark p-4">
-      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">{label}</p>
-      <div className="flex items-end gap-3">
-        <div>
-          <p className="text-xs text-slate-500 mb-0.5">Compra</p>
-          <p className="text-lg font-bold text-slate-900 dark:text-slate-100">
-            {rate.compra != null ? `$${rate.compra.toFixed(2)}` : "—"}
-          </p>
-        </div>
-        <div>
-          <p className="text-xs text-slate-500 mb-0.5">Venta</p>
-          <p className="text-lg font-bold text-slate-900 dark:text-slate-100">
-            {rate.venta != null ? `$${rate.venta.toFixed(2)}` : "—"}
-          </p>
-        </div>
+    <div className="card card-dark p-4 flex flex-col gap-2">
+      {/* Header row: label + brecha badge */}
+      <div className="flex items-start justify-between gap-1">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide leading-tight">{label}</p>
         {brechaVsOficial != null && (
-          <div className="ml-auto text-right">
-            <p className="text-xs text-slate-500 mb-0.5">Brecha</p>
-            <p className={`text-sm font-bold ${brechaVsOficial > 20 ? "text-red-500" : brechaVsOficial > 5 ? "text-amber-500" : "text-emerald-500"}`}>
-              +{brechaVsOficial.toFixed(1)}%
-            </p>
-          </div>
+          <span className={`text-xs font-bold px-1.5 py-0.5 rounded shrink-0 ${
+            brechaVsOficial > 20 ? "bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400"
+            : brechaVsOficial > 5  ? "bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400"
+            : "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
+          }`}>
+            +{brechaVsOficial.toFixed(1)}%
+          </span>
         )}
       </div>
-      <p className="text-xs text-slate-500 mt-2">
-        {new Date(rate.fechaActualizacion).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}
-      </p>
+      {/* Compra / Venta stacked */}
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <p className="text-[10px] text-slate-500 mb-0.5">Compra</p>
+          <p className="text-base font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+            {fmtPeso(rate.compra)}
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] text-slate-500 mb-0.5">Venta</p>
+          <p className="text-base font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+            {fmtPeso(rate.venta)}
+          </p>
+        </div>
+      </div>
+      <p className="text-[10px] text-slate-500">{hora}</p>
     </div>
   );
 }
@@ -376,7 +387,7 @@ export function MercadoClient() {
         {fx ? (
           <>
             {/* KPI grid */}
-            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 mb-5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
               <FxCard label="Oficial" rate={fx.oficial} />
               <FxCard label="Mayorista" rate={fx.mayorista} />
               <FxCard
