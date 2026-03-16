@@ -32,6 +32,8 @@ import {
 import { fetchDolarSnapshot, brecha } from "@/lib/dolar/client";
 import type { DolarSnapshot } from "@/lib/dolar/client";
 import type { BymaData, BymaQuote } from "@/lib/byma/client";
+import { getONSpec } from "@/lib/byma/on-specs";
+import type { ONSpec } from "@/lib/byma/on-specs";
 
 // ---- Types for BCRA tasas (fetched from our proxy) ----
 
@@ -528,54 +530,74 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
   const isUp  = (pct ?? 0) > 0;
   const isDown = (pct ?? 0) < 0;
 
-  // --- Maturity display ---
-  const matStr = q.maturityDate
-    ? new Date(q.maturityDate + "T12:00:00Z").toLocaleDateString("es-AR", {
+  // --- Lookup static ON spec (covers the ~33 most active ONs) ---
+  // Priority for coupon data: 1. static DB  2. BYMA field  3. parse description
+  const staticSpec: ONSpec | null = getONSpec(q.symbol);
+
+  // --- Maturity display (prefer static DB date for precision) ---
+  const displayMaturity = staticSpec?.maturityDate ?? q.maturityDate ?? null;
+  const matStr = displayMaturity
+    ? new Date(displayMaturity + "T12:00:00Z").toLocaleDateString("es-AR", {
         day: "2-digit", month: "short", year: "numeric",
       })
     : null;
 
   // --- TIR calculation ---
   // Priority: 1. BYMA provides yieldToMaturity → use it
-  //           2. Coupon parseable → Newton-Raphson
-  //           3. Zero-coupon approx (price + maturity only)
-  //           4. null
+  //           2. Static DB has coupon → Newton-Raphson (most accurate)
+  //           3. Coupon parseable from description → Newton-Raphson
+  //           4. No coupon data → show "pendiente" (don't show bogus approx)
   let tirValue: number | null = null;
   let tirLabel  = "";
   let tirNote   = "";
   let cashFlows: CashFlow[] = [];
-  let tirMethod: "byma" | "computed" | "approx" | "none" = "none";
+  let tirMethod: "byma" | "computed" | "pending" | "none" = "none";
+
+  // Resolve the best coupon source
+  const resolvedCoupon: number | null =
+    q.yieldToMaturity != null && q.yieldToMaturity > 0
+      ? null  // will use BYMA TIR directly below
+      : (staticSpec?.couponRate ?? q.couponRate ?? parseCouponFromDesc(q.description));
+
+  const resolvedFreq: 1 | 2 | 4 =
+    (staticSpec?.couponFrequency ?? q.couponFrequency ?? (q.currency === "USD" ? 2 : 1)) as 1 | 2 | 4;
+
+  // Resolve maturity — prefer static DB (more precise date) over BYMA string
+  const resolvedMaturity: string | null = staticSpec?.maturityDate ?? q.maturityDate ?? null;
+  const resolvedDays: number | null =
+    resolvedMaturity
+      ? Math.round((new Date(resolvedMaturity + "T12:00:00Z").getTime() - Date.now()) / 86_400_000)
+      : q.daysToMaturity ?? null;
+
+  const couponSource: "byma-field" | "static-db" | "description" | null =
+    q.yieldToMaturity != null && q.yieldToMaturity > 0 ? null
+    : staticSpec?.couponRate != null ? "static-db"
+    : q.couponRate != null ? "byma-field"
+    : parseCouponFromDesc(q.description) != null ? "description"
+    : null;
 
   if (q.yieldToMaturity != null && q.yieldToMaturity > 0) {
-    tirValue = q.yieldToMaturity;
-    tirLabel = "TIR (BYMA)";
-    tirNote  = "Calculada por BYMA.";
+    tirValue  = q.yieldToMaturity;
+    tirLabel  = "TIR (BYMA)";
+    tirNote   = "Calculada por BYMA.";
     tirMethod = "byma";
-  } else if (price != null && q.maturityDate && q.daysToMaturity && q.daysToMaturity > 0) {
-    // Try to get coupon rate: from field, then parse description
-    const couponPct = q.couponRate ?? parseCouponFromDesc(q.description);
-    if (couponPct != null) {
-      // USD ONs: semi-annual; ARS ONs: quarterly or annual (use 2 as default)
-      const freq = q.couponFrequency ?? (q.currency === "USD" ? 2 : 1);
-      cashFlows = buildCashFlows(couponPct, q.maturityDate, freq);
-      const computed = solveTIR(price, cashFlows, q.maturityDate);
-      if (computed != null && computed > -99) {
-        tirValue  = computed;
-        tirLabel  = couponPct === q.couponRate ? "TIR estimada" : "TIR estimada *";
-        tirNote   = couponPct === q.couponRate
-          ? `Calculada con cupón ${couponPct}% (${freq === 2 ? "semestral" : freq === 4 ? "trimestral" : "anual"}).`
-          : `Calculada con cupón ${couponPct}% parseado de la descripción. Los flujos son aproximados — verificar con el prospecto.`;
-        tirMethod = "computed";
-        if (couponPct !== q.couponRate) tirLabel = "TIR estimada *";
-      }
-    } else {
-      // Pure zero-coupon approximation: TIR = (100/price)^(365/days) - 1
-      const years = q.daysToMaturity / 365;
-      tirValue  = (Math.pow(100 / price, 1 / years) - 1) * 100;
-      tirLabel  = "Rendimiento estimado";
-      tirNote   = "Sin datos de cupón — asume bono descuento (bullet). Puede diferir significativamente del rendimiento real si paga cupones.";
-      tirMethod = "approx";
+  } else if (price != null && resolvedMaturity && resolvedDays && resolvedDays > 0 && resolvedCoupon != null) {
+    cashFlows = buildCashFlows(resolvedCoupon, resolvedMaturity, resolvedFreq);
+    const computed = solveTIR(price, cashFlows, resolvedMaturity);
+    if (computed != null && computed > -99) {
+      tirValue  = computed;
+      tirLabel  = "TIR";
+      tirNote   = couponSource === "static-db"
+        ? `Cupón ${resolvedCoupon}% anual (${resolvedFreq === 2 ? "semestral" : resolvedFreq === 4 ? "trimestral" : "anual"}) — base de datos interna.`
+        : couponSource === "description"
+        ? `Cupón ${resolvedCoupon}% parseado de la descripción — verificar con el prospecto.`
+        : `Cupón ${resolvedCoupon}% anual.`;
+      tirMethod = "computed";
+      if (couponSource === "description") tirLabel = "TIR estimada *";
     }
+  } else if (price != null && resolvedDays && resolvedDays > 0) {
+    // Coupon data missing — show "pendiente" instead of a misleading approx
+    tirMethod = "pending";
   }
 
   // --- Frequency label helper ---
@@ -611,8 +633,8 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
               )}
             </div>
             <p className="text-sm text-slate-600 dark:text-slate-400 leading-snug line-clamp-2">{q.description}</p>
-            {q.issuer && q.issuer !== q.description && (
-              <p className="text-xs text-slate-500 mt-0.5">Emisor: {q.issuer}</p>
+            {(staticSpec?.issuer ?? q.issuer) && (staticSpec?.issuer ?? q.issuer) !== q.description && !(staticSpec?.issuer ?? "").includes("completar") && (
+              <p className="text-xs text-slate-500 mt-0.5">Emisor: {staticSpec?.issuer ?? q.issuer}</p>
             )}
           </div>
           <button
@@ -710,11 +732,14 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
               {tirMethod === "byma" && (
                 <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded-full font-medium">BYMA</span>
               )}
-              {tirMethod === "computed" && (
-                <span className="text-[10px] bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded-full font-medium">Estimada</span>
+              {tirMethod === "computed" && couponSource === "static-db" && (
+                <span className="text-[10px] bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded-full font-medium">DB interna</span>
               )}
-              {tirMethod === "approx" && (
-                <span className="text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full font-medium">Aprox</span>
+              {tirMethod === "computed" && couponSource !== "static-db" && (
+                <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-500 px-2 py-0.5 rounded-full font-medium">Estimada</span>
+              )}
+              {tirMethod === "pending" && (
+                <span className="text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 px-2 py-0.5 rounded-full font-medium">Datos pendientes</span>
               )}
             </div>
             <div className="px-4 py-3">
@@ -726,6 +751,15 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                   <p className="text-xs text-slate-500 mt-1">{tirLabel}</p>
                   {tirNote && <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 leading-relaxed">{tirNote}</p>}
                 </>
+              ) : tirMethod === "pending" ? (
+                <div className="py-1">
+                  <p className="text-sm text-amber-600 dark:text-amber-400 font-medium">Cupón no disponible en API gratuita</p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Completar <code className="bg-slate-100 dark:bg-slate-800 px-1 rounded text-[10px]">couponRate</code> en{" "}
+                    <code className="bg-slate-100 dark:bg-slate-800 px-1 rounded text-[10px]">src/lib/byma/on-specs.ts</code>{" "}
+                    o integrar API A3.
+                  </p>
+                </div>
               ) : (
                 <p className="text-sm text-slate-400 py-1">No disponible — precio o vencimiento faltante.</p>
               )}
@@ -738,7 +772,7 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Flujos de Caja <span className="text-slate-400 font-normal">(sobre 100 VN)</span></h3>
               {cashFlows.length > 0 && (
                 <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-500 px-2 py-0.5 rounded-full">
-                  {q.couponFrequency != null ? freqLabel(q.couponFrequency) : q.currency === "USD" ? "semestral*" : "anual*"}
+                  {freqLabel(resolvedFreq)}{couponSource !== "static-db" && couponSource !== "byma-field" ? "*" : ""}
                 </span>
               )}
             </div>
