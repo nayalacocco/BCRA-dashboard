@@ -32,6 +32,7 @@ import {
 } from "@/components/dashboard/PeriodSelector";
 import { fetchDolarSnapshot, brecha } from "@/lib/dolar/client";
 import type { DolarSnapshot } from "@/lib/dolar/client";
+import type { BymaData, BymaQuote } from "@/lib/byma/client";
 
 // ---- Types for BCRA tasas (fetched from our proxy) ----
 
@@ -307,11 +308,60 @@ function MAEPendingNotice() {
   );
 }
 
+// ---- BYMA bond card ----
+
+function BondCard({ q }: { q: BymaQuote }) {
+  const isUp   = (q.changePercent ?? 0) > 0;
+  const isDown = (q.changePercent ?? 0) < 0;
+  const pct    = q.changePercent ?? 0;
+
+  return (
+    <div className="card card-dark p-4">
+      <div className="flex items-start justify-between mb-1 gap-1">
+        <span className="text-xs font-bold text-slate-400 font-mono truncate">{q.symbol}</span>
+        <span className={`text-xs font-semibold shrink-0 ${isUp ? "text-emerald-500" : isDown ? "text-red-500" : "text-slate-400"}`}>
+          {pct > 0 ? "+" : ""}{pct.toFixed(2)}%
+        </span>
+      </div>
+      <p className="text-base font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+        {q.lastPrice != null
+          ? q.lastPrice.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          : "—"
+        }
+      </p>
+      <p className="text-xs text-slate-500 mt-0.5 truncate">{q.description}</p>
+      <div className="flex items-center gap-2 mt-1.5 text-xs text-slate-500">
+        {q.currency && <span>{q.currency}</span>}
+        {q.yieldToMaturity != null && (
+          <>
+            <span>·</span>
+            <span>TIR {q.yieldToMaturity.toFixed(1)}%</span>
+          </>
+        )}
+        {q.volume != null && q.volume > 0 && (
+          <>
+            <span>·</span>
+            <span>Vol {(q.volume / 1e6).toFixed(1)}M</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---- Main page ----
+
+async function fetchByma(): Promise<BymaData> {
+  const res = await fetch("/api/byma/mercado");
+  const json = await res.json();
+  if (json.error) throw new Error(json.error);
+  return json.data as BymaData;
+}
 
 export function MercadoClient() {
   const [fx, setFx]           = useState<DolarSnapshot | null>(null);
   const [tasas, setTasas]     = useState<TasasData | null>(null);
+  const [byma, setByma]       = useState<BymaData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
   const [period, setPeriod]   = useState<Period>("6m");
@@ -322,10 +372,12 @@ export function MercadoClient() {
     Promise.allSettled([
       fetchDolarSnapshot(),
       fetchTasas(),
-    ]).then(([fxRes, tasasRes]) => {
-      if (fxRes.status === "fulfilled")    setFx(fxRes.value);
+      fetchByma(),
+    ]).then(([fxRes, tasasRes, bymaRes]) => {
+      if (fxRes.status   === "fulfilled") setFx(fxRes.value);
       if (tasasRes.status === "fulfilled") setTasas(tasasRes.value);
-      if (fxRes.status === "rejected" && tasasRes.status === "rejected") {
+      if (bymaRes.status  === "fulfilled") setByma(bymaRes.value);
+      if (fxRes.status === "rejected" && tasasRes.status === "rejected" && bymaRes.status === "rejected") {
         setError("No se pudieron cargar datos de ninguna fuente.");
       }
     }).finally(() => setLoading(false));
@@ -364,7 +416,7 @@ export function MercadoClient() {
         </div>
         <div className="text-xs text-slate-400 flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          FX: dolarapi.com · Tasas: BCRA
+          FX: dolarapi.com · Tasas: BCRA · Bonos: BYMA
         </div>
       </div>
 
@@ -495,37 +547,123 @@ export function MercadoClient() {
       </BlockSection>
 
       {/* ================================================================
-          REPOS MAE / CAUCIONES / RENTA FIJA — pendiente habilitación
+          RENTA FIJA — BYMA
       ================================================================ */}
-      <BlockSection title="Repos MAE" icon="💴" color="violet">
-        <MAEPendingNotice />
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {["Overnight (1d)", "3 días", "7 días", "Volumen"].map((l) => (
-            <PendingCard key={l} label={`Repo ${l}`} description="Tasa promedio ponderada MAE" source="Pendiente habilitación MAE" unit="% TNA" />
-          ))}
-        </div>
-      </BlockSection>
-
-      <BlockSection title="Cauciones Bursátiles" icon="📋" color="emerald">
-        <MAEPendingNotice />
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {["1 día", "7 días", "14 días", "30 días"].map((p) => (
-            <PendingCard key={p} label={`Caución ${p}`} description="Tasa de caución bursátil" source="Pendiente habilitación MAE" unit="% TNA" />
-          ))}
-        </div>
-      </BlockSection>
-
       <BlockSection title="Renta Fija" icon="📊" color="orange">
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+          Precios y TIR de bonos soberanos y ONs. Fuente: BYMA · open.bymadata.com.ar
+          {byma && !byma.marketOpen && (
+            <span className="ml-2 text-slate-400">(último cierre)</span>
+          )}
+        </p>
+
+        {byma && byma.publicBonds.length > 0 ? (
+          <>
+            {/* Sovereign bonds — filter key tickers */}
+            {(() => {
+              const SOVEREIGN = ["GD30", "GD29", "AL30", "AL35", "AE38", "GD35", "GD38", "GD41", "GD46"];
+              const sovereigns = byma.publicBonds
+                .filter((q) => SOVEREIGN.some((t) => q.symbol.startsWith(t)))
+                .sort((a, b) => a.symbol.localeCompare(b.symbol));
+              const letras = byma.publicBonds
+                .filter((q) => q.symbol.startsWith("S") || q.symbol.startsWith("T") || q.description.toLowerCase().includes("lecap") || q.description.toLowerCase().includes("letra"))
+                .sort((a, b) => a.symbol.localeCompare(b.symbol))
+                .slice(0, 8);
+              const all = byma.publicBonds.slice(0, 20);
+
+              return (
+                <>
+                  {sovereigns.length > 0 && (
+                    <>
+                      <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Bonos Soberanos</p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
+                        {sovereigns.slice(0, 8).map((q) => <BondCard key={q.symbol} q={q} />)}
+                      </div>
+                    </>
+                  )}
+                  {letras.length > 0 && (
+                    <>
+                      <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Letras / LECAP</p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
+                        {letras.map((q) => <BondCard key={q.symbol} q={q} />)}
+                      </div>
+                    </>
+                  )}
+                  {sovereigns.length === 0 && (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                      {all.map((q) => <BondCard key={q.symbol} q={q} />)}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {["GD30", "AL30", "AE38", "GD35", "GD41", "GD46"].map((t) => (
+              <PendingCard key={t} label={t} description="Bono soberano" source="BYMA" unit="ARS" />
+            ))}
+          </div>
+        )}
+      </BlockSection>
+
+      {/* ================================================================
+          ONs — BYMA
+      ================================================================ */}
+      {byma && byma.negotiableObligations.length > 0 && (
+        <BlockSection title="Obligaciones Negociables" icon="🏢" color="blue">
+          <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+            ONs corporativas. Fuente: BYMA
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {byma.negotiableObligations.slice(0, 16).map((q) => <BondCard key={q.symbol} q={q} />)}
+          </div>
+        </BlockSection>
+      )}
+
+      {/* ================================================================
+          ACCIONES LÍDERES + MERVAL — BYMA
+      ================================================================ */}
+      {byma && (byma.leadingEquity.length > 0 || byma.indices.length > 0) && (
+        <BlockSection title="Renta Variable" icon="📈" color="emerald">
+          <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+            Panel Merval e índices. Fuente: BYMA
+          </p>
+
+          {/* Indices */}
+          {byma.indices.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-5">
+              {byma.indices.map((idx) => (
+                <div key={idx.symbol} className="card card-dark p-4">
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">{idx.symbol}</p>
+                  <p className="text-base font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+                    {idx.lastValue.toLocaleString("es-AR", { maximumFractionDigits: 0 })}
+                  </p>
+                  <p className={`text-xs font-semibold mt-0.5 ${idx.changePercent > 0 ? "text-emerald-500" : idx.changePercent < 0 ? "text-red-500" : "text-slate-400"}`}>
+                    {idx.changePercent > 0 ? "+" : ""}{idx.changePercent.toFixed(2)}%
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Panel Merval */}
+          {byma.leadingEquity.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {byma.leadingEquity.slice(0, 12).map((q) => <BondCard key={q.symbol} q={q} />)}
+            </div>
+          )}
+        </BlockSection>
+      )}
+
+      {/* ================================================================
+          REPOS MAE / CAUCIONES — pendiente habilitación
+      ================================================================ */}
+      <BlockSection title="Repos MAE & Cauciones" icon="💴" color="violet">
         <MAEPendingNotice />
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          {["GD30", "AL30", "AE38", "GD35", "GD41", "GD46", "LECAP", "LECER"].map((t) => (
-            <PendingCard
-              key={t}
-              label={t}
-              description={t.startsWith("GD") || t.startsWith("AL") || t.startsWith("AE") ? "Bono soberano en USD" : "Instrumento de tasa fija"}
-              source="Pendiente habilitación MAE"
-              unit="ARS"
-            />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {["Repo Overnight", "Repo 3 días", "Caución 1d", "Caución 7d"].map((l) => (
+            <PendingCard key={l} label={l} description="Pendiente habilitación MAE/A3" source="MAE" unit="% TNA" />
           ))}
         </div>
       </BlockSection>
