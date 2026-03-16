@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -40,19 +40,9 @@ function findQuote(quotes: MAEQuote[], ticker: string): MAEQuote | undefined {
   return quotes.find((q) => q.ticker === ticker || q.ticker.startsWith(ticker));
 }
 
-function fmtBillions(v: number) {
-  if (v >= 1000) return `${(v / 1000).toFixed(1)}T`;
-  return `${v.toFixed(0)}B`;
-}
-
 // ---- Chart helpers ----
 
 const MONTHS_ES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
-
-function formatDayTick(v: string) {
-  const [y, m, d] = v.split("-");
-  return `${parseInt(d)}/${MONTHS_ES[parseInt(m) - 1]}`;
-}
 
 function formatMonthTick(v: string) {
   const [y, m] = v.split("-");
@@ -83,13 +73,11 @@ function MultiSeriesChart({
   series,
   height = 260,
   unit = "%",
-  showZeroLine = false,
   tickFmt = formatMonthTick,
 }: {
   series: MultiSeriesLine[];
   height?: number;
   unit?: string;
-  showZeroLine?: boolean;
   tickFmt?: (v: string) => string;
 }) {
   const combined = useMemo(() => {
@@ -224,13 +212,33 @@ function BondCard({ quote }: { quote: MAEQuote }) {
   );
 }
 
+// ---- Loading skeleton ----
+
+function LoadingSkeleton() {
+  return (
+    <div className="space-y-8 animate-pulse">
+      <div className="h-8 w-64 bg-slate-200 dark:bg-slate-800 rounded" />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-28 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+        ))}
+      </div>
+      <div className="h-72 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+      <div className="h-48 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-28 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ---- Main component ----
 
-// Tickers to highlight in renta fija
 const SOVEREIGN_TICKERS = ["GD30", "GD29", "AL30", "AL35", "AE38", "GD35", "GD38", "GD41", "GD46"];
-const LECAP_PREFIXES = ["S", "T"];  // LECAP start with S or T + date
 
-export function MercadoClient({ data }: { data: MercadoData }) {
+function MercadoContent({ data }: { data: MercadoData }) {
   const [period, setPeriod] = useState<Period>("6m");
 
   const f = useMemo(
@@ -243,31 +251,26 @@ export function MercadoClient({ data }: { data: MercadoData }) {
     [data, period]
   );
 
-  // Forex - find MEP
   const mep = findQuote(data.forex, "USMEP");
   const usdTransf = findQuote(data.forex, "UST$T");
 
-  // Cauciones - get by plazo
-  const cau1d  = data.cauciones.find((q) => q.plazo === "001" || q.plazo === "01");
-  const cau7d  = data.cauciones.find((q) => q.plazo === "007" || q.plazo === "07");
+  const cau1d  = data.cauciones.find((q) => parseInt(q.plazo) <= 1);
+  const cau7d  = data.cauciones.find((q) => parseInt(q.plazo) === 7);
   const cau30d = data.cauciones.find((q) => parseInt(q.plazo) >= 28 && parseInt(q.plazo) <= 32);
 
-  // Renta fija - sovereign bonds + LECAP
   const sovereignBonds = data.rentafija
     .filter((q) => SOVEREIGN_TICKERS.some((t) => q.ticker.startsWith(t)))
     .slice(0, 8);
   const lecaps = data.rentafija
-    .filter((q) => q.tipoEmision === "LCAP" || q.descripcion.toLowerCase().includes("lecap") || q.ticker.startsWith("S") && q.tipoEmision !== "TPN")
+    .filter((q) => q.tipoEmision === "LCAP" || q.descripcion.toLowerCase().includes("lecap"))
     .slice(0, 6);
 
   return (
     <div className="space-y-10">
-      {/* ---- HEADER ---- */}
+      {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
-            Mercado
-          </h1>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Mercado</h1>
           <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">
             Repos MAE · Renta fija · Cauciones · FX de mercado
           </p>
@@ -290,7 +293,7 @@ export function MercadoClient({ data }: { data: MercadoData }) {
         </div>
       </div>
 
-      {/* ---- PERIOD SELECTOR (sticky) ---- */}
+      {/* Sticky period selector */}
       <div className="sticky top-16 z-40 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-3 bg-white/90 dark:bg-slate-950/90 backdrop-blur-sm border-b border-slate-200/60 dark:border-slate-800/60">
         <div className="flex items-center gap-3 flex-wrap">
           <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
@@ -351,15 +354,10 @@ export function MercadoClient({ data }: { data: MercadoData }) {
           />
         </div>
 
-        {/* Historical rates chart */}
         <div className="card card-dark p-5 mb-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-slate-900 dark:text-slate-100">
-              Evolución Tasas Repo
-            </h3>
-            <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
-              % TNA
-            </span>
+            <h3 className="font-semibold text-slate-900 dark:text-slate-100">Evolución Tasas Repo</h3>
+            <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">% TNA</span>
           </div>
           <MultiSeriesChart
             series={[
@@ -372,30 +370,20 @@ export function MercadoClient({ data }: { data: MercadoData }) {
           />
         </div>
 
-        {/* Term structure */}
         {data.repoLatestCurve.length > 0 && (
           <div className="card card-dark p-5 mb-5">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-slate-900 dark:text-slate-100">
-                Curva de Plazos — Último día
-              </h3>
-              <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
-                % TNA por plazo
-              </span>
+              <h3 className="font-semibold text-slate-900 dark:text-slate-100">Curva de Plazos — Último día</h3>
+              <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">% TNA por plazo</span>
             </div>
             <CurvaBar data={data.repoLatestCurve} height={200} />
           </div>
         )}
 
-        {/* Volume chart */}
         <div className="card card-dark p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-slate-900 dark:text-slate-100">
-              Volumen Diario Overnight
-            </h3>
-            <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
-              ARS miles de millones
-            </span>
+            <h3 className="font-semibold text-slate-900 dark:text-slate-100">Volumen Diario Overnight</h3>
+            <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">ARS miles de millones</span>
           </div>
           <MultiSeriesChart
             series={[{ key: "vol", label: "Volumen", data: f.repoVolume, color: "#6d28d9" }]}
@@ -423,11 +411,7 @@ export function MercadoClient({ data }: { data: MercadoData }) {
               decimals={2}
             />
           ) : (
-            <PendingCard
-              label="USD MEP"
-              description="Dólar bolsa (USMEP) · MAE"
-              source="MAE / Mercado cerrado"
-            />
+            <PendingCard label="USD MEP" description="Dólar bolsa (USMEP) · MAE" source="MAE / Mercado cerrado" />
           )}
           {usdTransf ? (
             <DeltaKPICard
@@ -440,32 +424,17 @@ export function MercadoClient({ data }: { data: MercadoData }) {
               decimals={2}
             />
           ) : (
-            <PendingCard
-              label="USD Transferencia"
-              description="USD wire → ARS · MAE"
-              source="MAE / Mercado cerrado"
-            />
+            <PendingCard label="USD Transferencia" description="USD wire → ARS · MAE" source="MAE / Mercado cerrado" />
           )}
-          <PendingCard
-            label="USD CCL"
-            description="Derivado GD30 ARS ÷ GD30 USD"
-            source="Calculado de renta fija"
-          />
-          <PendingCard
-            label="Brecha MEP/Oficial"
-            description="(MEP − Oficial) / Oficial"
-            source="Calculado"
-            unit="%"
-          />
+          <PendingCard label="USD CCL" description="Derivado GD30 ARS ÷ GD30 USD" source="Calculado de renta fija" />
+          <PendingCard label="Brecha MEP/Oficial" description="(MEP − Oficial) / Oficial" source="Calculado" unit="%" />
         </div>
 
         {data.forex.length > 0 && (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-            {data.forex
-              .filter((q) => q.precioUltimo > 0)
-              .map((q) => (
-                <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />
-              ))}
+            {data.forex.filter((q) => q.precioUltimo > 0).map((q) => (
+              <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />
+            ))}
           </div>
         )}
       </BlockSection>
@@ -483,53 +452,21 @@ export function MercadoClient({ data }: { data: MercadoData }) {
           <>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
               {cau1d && (
-                <DeltaKPICard
-                  label="Caución 1 día"
-                  value={cau1d.ultimaTasa}
-                  suffix="% TNA"
-                  date={cau1d.fecha?.slice(0, 10)}
-                  color="#2f9e44"
-                  positiveIsGood={false}
-                  decimals={2}
-                />
+                <DeltaKPICard label="Caución 1 día" value={cau1d.ultimaTasa} suffix="% TNA" date={cau1d.fecha?.slice(0, 10)} color="#2f9e44" positiveIsGood={false} decimals={2} />
               )}
               {cau7d && (
-                <DeltaKPICard
-                  label="Caución 7 días"
-                  value={cau7d.ultimaTasa}
-                  suffix="% TNA"
-                  date={cau7d.fecha?.slice(0, 10)}
-                  color="#2f9e44"
-                  positiveIsGood={false}
-                  decimals={2}
-                />
+                <DeltaKPICard label="Caución 7 días" value={cau7d.ultimaTasa} suffix="% TNA" date={cau7d.fecha?.slice(0, 10)} color="#2f9e44" positiveIsGood={false} decimals={2} />
               )}
               {cau30d && (
-                <DeltaKPICard
-                  label="Caución ~30 días"
-                  value={cau30d.ultimaTasa}
-                  suffix="% TNA"
-                  date={cau30d.fecha?.slice(0, 10)}
-                  color="#2f9e44"
-                  positiveIsGood={false}
-                  decimals={2}
-                />
+                <DeltaKPICard label="Caución ~30 días" value={cau30d.ultimaTasa} suffix="% TNA" date={cau30d.fecha?.slice(0, 10)} color="#2f9e44" positiveIsGood={false} decimals={2} />
               )}
             </div>
-            {/* Cauciones term structure */}
             <div className="card card-dark p-5">
-              <h3 className="font-semibold text-slate-900 dark:text-slate-100 mb-4">
-                Curva de Cauciones — Hoy
-              </h3>
+              <h3 className="font-semibold text-slate-900 dark:text-slate-100 mb-4">Curva de Cauciones — Hoy</h3>
               <CurvaBar
                 data={data.cauciones
                   .filter((q) => q.ultimaTasa > 0)
-                  .map((q) => ({
-                    plazo: q.plazo,
-                    tasa: q.ultimaTasa,
-                    vol: q.volumenAcumulado,
-                    ops: 0,
-                  }))
+                  .map((q) => ({ plazo: q.plazo, tasa: q.ultimaTasa, vol: q.volumenAcumulado, ops: 0 }))
                   .sort((a, b) => parseInt(a.plazo) - parseInt(b.plazo))}
                 height={200}
               />
@@ -538,13 +475,7 @@ export function MercadoClient({ data }: { data: MercadoData }) {
         ) : (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {["1 día", "7 días", "14 días", "30 días"].map((p) => (
-              <PendingCard
-                key={p}
-                label={`Caución ${p}`}
-                description="Tasas de cauciones bursátiles · BYMA/MAE"
-                source="MAE — disponible en horario de mercado"
-                unit="% TNA"
-              />
+              <PendingCard key={p} label={`Caución ${p}`} description="Tasas de cauciones bursátiles · MAE" source="Disponible en horario de mercado" unit="% TNA" />
             ))}
           </div>
         )}
@@ -558,12 +489,9 @@ export function MercadoClient({ data }: { data: MercadoData }) {
 
         {data.rentafija.length > 0 ? (
           <>
-            {/* Sovereign bonds */}
             {sovereignBonds.length > 0 && (
               <>
-                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">
-                  Bonos Soberanos
-                </p>
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Bonos Soberanos</p>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
                   {sovereignBonds.map((q) => (
                     <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />
@@ -571,13 +499,9 @@ export function MercadoClient({ data }: { data: MercadoData }) {
                 </div>
               </>
             )}
-
-            {/* LECAP */}
             {lecaps.length > 0 && (
               <>
-                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">
-                  LECAP / Tasa Fija
-                </p>
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">LECAP / Tasa Fija</p>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
                   {lecaps.map((q) => (
                     <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />
@@ -585,9 +509,7 @@ export function MercadoClient({ data }: { data: MercadoData }) {
                 </div>
               </>
             )}
-
-            {/* All bonds table if many */}
-            {data.rentafija.length > 0 && sovereignBonds.length === 0 && (
+            {sovereignBonds.length === 0 && (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                 {data.rentafija.slice(0, 16).map((q) => (
                   <BondCard key={`${q.ticker}-${q.plazo}`} quote={q} />
@@ -602,7 +524,7 @@ export function MercadoClient({ data }: { data: MercadoData }) {
                 key={t}
                 label={t}
                 description={t.startsWith("GD") || t.startsWith("AL") || t.startsWith("AE") ? "Bono soberano en USD" : "Instrumento de tasa fija"}
-                source="MAE — disponible en horario de mercado"
+                source="Disponible en horario de mercado"
                 unit="ARS"
               />
             ))}
@@ -611,4 +533,57 @@ export function MercadoClient({ data }: { data: MercadoData }) {
       </BlockSection>
     </div>
   );
+}
+
+// ---- Root export — fetches data client-side ----
+
+export function MercadoClient() {
+  const [data, setData]     = useState<MercadoData | null>(null);
+  const [error, setError]   = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch("/api/mae/mercado")
+      .then(async (res) => {
+        const json = await res.json();
+        if (cancelled) return;
+        if (json.error) {
+          setError(json.error);
+        } else {
+          setData(json.data);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (loading) return <LoadingSkeleton />;
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Mercado</h1>
+        <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-6">
+          <p className="text-sm font-semibold text-red-700 dark:text-red-400 mb-1">Error al cargar datos del MAE</p>
+          <p className="text-xs text-red-600 dark:text-red-500 font-mono break-all">{error}</p>
+          <button
+            onClick={() => { setError(null); setLoading(true); fetch("/api/mae/mercado").then(r => r.json()).then(j => { setData(j.data); setError(j.error); }).catch(e => setError(String(e))).finally(() => setLoading(false)); }}
+            className="mt-4 text-xs bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 px-3 py-1.5 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors"
+          >
+            Reintentar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+  return <MercadoContent data={data} />;
 }
