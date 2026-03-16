@@ -27,7 +27,6 @@ import { BlockSection } from "@/components/dashboard/BlockSection";
 import { PendingCard } from "@/components/dashboard/PendingCard";
 import {
   PeriodSelector,
-  filterByPeriod,
   type Period,
 } from "@/components/dashboard/PeriodSelector";
 import { fetchDolarSnapshot, brecha } from "@/lib/dolar/client";
@@ -91,6 +90,52 @@ function getDelta(s: SeriesPoint[]) {
   const prev = s[s.length - 2].valor;
   if (prev === 0) return { abs: last - prev, pct: null };
   return { abs: last - prev, pct: ((last - prev) / Math.abs(prev)) * 100 };
+}
+
+/**
+ * Like filterByPeriod but anchors relative periods (1m/3m/6m/1y/2y/5y) to the
+ * LAST DATA POINT instead of today. This is critical for BCRA monthly series
+ * which are published with a 3-5 month lag — anchoring to today would show
+ * almost no data for short periods.
+ * Government periods (milei, macri, etc.) still use their fixed absolute dates.
+ */
+function filterByPeriodAnchored(data: SeriesPoint[], period: Period): SeriesPoint[] {
+  if (data.length === 0) return data;
+  if (period === "max") return data;
+
+  // Government periods: absolute date ranges
+  const GOV_PERIODS: Record<string, { desde: string; hasta?: string }> = {
+    milei:   { desde: "2023-12-10" },
+    fernandez: { desde: "2019-12-10", hasta: "2023-12-10" },
+    macri:   { desde: "2015-12-10", hasta: "2019-12-10" },
+    kirchner: { desde: "2003-05-25", hasta: "2015-12-10" },
+  };
+  if (period in GOV_PERIODS) {
+    const { desde, hasta } = GOV_PERIODS[period];
+    return data.filter((d) => {
+      if (desde && d.fecha < desde) return false;
+      if (hasta && d.fecha > hasta) return false;
+      return true;
+    });
+  }
+
+  // Relative periods: anchor to last data point date
+  const anchorStr = data[data.length - 1].fecha;
+  const anchor = new Date(anchorStr + "T12:00:00Z");
+  const iso = (d: Date) => d.toISOString().split("T")[0];
+
+  let desde: string;
+  switch (period) {
+    case "1m": { const d = new Date(anchor); d.setMonth(d.getMonth() - 1);     desde = iso(d); break; }
+    case "3m": { const d = new Date(anchor); d.setMonth(d.getMonth() - 3);     desde = iso(d); break; }
+    case "6m": { const d = new Date(anchor); d.setMonth(d.getMonth() - 6);     desde = iso(d); break; }
+    case "1y": { const d = new Date(anchor); d.setFullYear(d.getFullYear()-1); desde = iso(d); break; }
+    case "2y": { const d = new Date(anchor); d.setFullYear(d.getFullYear()-2); desde = iso(d); break; }
+    case "5y": { const d = new Date(anchor); d.setFullYear(d.getFullYear()-5); desde = iso(d); break; }
+    default:   return data;
+  }
+
+  return data.filter((d) => d.fecha >= desde);
 }
 
 const MONTHS_ES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
@@ -201,10 +246,10 @@ function BrechaChart({ fx }: { fx: DolarSnapshot }) {
 
 function TasasChart({ data, period }: { data: TasasData; period: Period }) {
   const series = useMemo(() => ({
-    badlar:      filterByPeriod(data.badlar,      period),
-    call:        filterByPeriod(data.call,        period),
-    politicaMon: filterByPeriod(data.politicaMon, period),
-    pf30:        filterByPeriod(data.pf30,        period),
+    badlar:      filterByPeriodAnchored(data.badlar,      period),
+    call:        filterByPeriodAnchored(data.call,        period),
+    politicaMon: filterByPeriodAnchored(data.politicaMon, period),
+    pf30:        filterByPeriodAnchored(data.pf30,        period),
   }), [data, period]);
 
   const combined = useMemo(() => {
@@ -313,35 +358,49 @@ function MAEPendingNotice() {
 function BondCard({ q }: { q: BymaQuote }) {
   const isUp   = (q.changePercent ?? 0) > 0;
   const isDown = (q.changePercent ?? 0) < 0;
-  const pct    = q.changePercent ?? 0;
+  const pct    = q.changePercent;
+
+  // Format price: ARS bonds are quoted in nominal/100 units (e.g. 110,000),
+  // USD bonds in cent-dollars (e.g. 74.77)
+  const priceStr = q.lastPrice != null
+    ? q.lastPrice.toLocaleString("es-AR", {
+        minimumFractionDigits: q.lastPrice >= 100 ? 0 : 2,
+        maximumFractionDigits: q.lastPrice >= 100 ? 0 : 2,
+      })
+    : "—";
 
   return (
     <div className="card card-dark p-4">
-      <div className="flex items-start justify-between mb-1 gap-1">
-        <span className="text-xs font-bold text-slate-400 font-mono truncate">{q.symbol}</span>
-        <span className={`text-xs font-semibold shrink-0 ${isUp ? "text-emerald-500" : isDown ? "text-red-500" : "text-slate-400"}`}>
-          {pct > 0 ? "+" : ""}{pct.toFixed(2)}%
+      <div className="flex items-start justify-between mb-1.5 gap-1">
+        <span className="text-xs font-bold text-slate-300 font-mono">{q.symbol}</span>
+        <span className={`text-xs font-semibold shrink-0 tabular-nums ${
+          pct == null  ? "text-slate-500"
+          : isUp       ? "text-emerald-500"
+          : isDown     ? "text-red-500"
+          :              "text-slate-400"
+        }`}>
+          {pct == null ? "—" : `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`}
         </span>
       </div>
-      <p className="text-base font-bold text-slate-900 dark:text-slate-100 tabular-nums">
-        {q.lastPrice != null
-          ? q.lastPrice.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-          : "—"
-        }
+      <p className="text-lg font-bold text-slate-900 dark:text-slate-100 tabular-nums leading-tight">
+        {priceStr}
       </p>
-      <p className="text-xs text-slate-500 mt-0.5 truncate">{q.description}</p>
       <div className="flex items-center gap-2 mt-1.5 text-xs text-slate-500">
-        {q.currency && <span>{q.currency}</span>}
-        {q.yieldToMaturity != null && (
+        {q.currency && (
+          <span className={`font-medium ${q.currency === "USD" ? "text-emerald-500/80" : "text-blue-400/80"}`}>
+            {q.currency}
+          </span>
+        )}
+        {q.maturityDate && (
           <>
             <span>·</span>
-            <span>TIR {q.yieldToMaturity.toFixed(1)}%</span>
+            <span>{q.maturityDate.slice(0, 7)}</span>
           </>
         )}
-        {q.volume != null && q.volume > 0 && (
+        {q.volumeAmount != null && q.volumeAmount > 0 && (
           <>
             <span>·</span>
-            <span>Vol {(q.volume / 1e6).toFixed(1)}M</span>
+            <span>Vol {(q.volumeAmount / 1e6).toFixed(0)}M</span>
           </>
         )}
       </div>
@@ -559,39 +618,66 @@ export function MercadoClient() {
 
         {byma && byma.publicBonds.length > 0 ? (
           <>
-            {/* Sovereign bonds — filter key tickers */}
             {(() => {
-              const SOVEREIGN = ["GD30", "GD29", "AL30", "AL35", "AE38", "GD35", "GD38", "GD41", "GD46"];
+              // Ley-argentina sovereign bonds available in BYMA free API
+              // Note: GD-series (ley NY) are NOT in the free tier
+              const SOVEREIGN_BASE = ["AL30","AL35","AL41","AL29","AE38","AO27","AN29","DICP","PARA"];
+
+              // Keep only: exact base (ARS price) and "C" suffix (USD cable)
+              // Filter out D (MEP), X/Y/Z (technical/repo variants)
               const sovereigns = byma.publicBonds
-                .filter((q) => SOVEREIGN.some((t) => q.symbol.startsWith(t)))
-                .sort((a, b) => a.symbol.localeCompare(b.symbol));
+                .filter((q) => {
+                  const base = q.symbol.replace(/[CDXYZcdxyz]$/, "");
+                  if (!SOVEREIGN_BASE.includes(base)) return false;
+                  const suffix = q.symbol.slice(base.length);
+                  return suffix === "" || suffix === "C";
+                })
+                .sort((a, b) => {
+                  const aBase = a.symbol.replace(/C$/, "");
+                  const bBase = b.symbol.replace(/C$/, "");
+                  const ai = SOVEREIGN_BASE.indexOf(aBase);
+                  const bi = SOVEREIGN_BASE.indexOf(bBase);
+                  if (ai !== bi) return ai - bi;
+                  // ARS before USD within same base
+                  return (a.currency === "ARS" ? 0 : 1) - (b.currency === "ARS" ? 0 : 1);
+                });
+
+              // Letras del Tesoro: short-duration T-bills (S or T prefix, ≤6 chars)
               const letras = byma.publicBonds
-                .filter((q) => q.symbol.startsWith("S") || q.symbol.startsWith("T") || q.description.toLowerCase().includes("lecap") || q.description.toLowerCase().includes("letra"))
+                .filter((q) => {
+                  const sym = q.symbol;
+                  return (
+                    ((sym.startsWith("S") || sym.startsWith("T")) && sym.length <= 6) &&
+                    !SOVEREIGN_BASE.some(b => sym.startsWith(b))
+                  );
+                })
+                .filter((q) => q.currency === "ARS") // only ARS letras
                 .sort((a, b) => a.symbol.localeCompare(b.symbol))
                 .slice(0, 8);
-              const all = byma.publicBonds.slice(0, 20);
 
               return (
                 <>
                   {sovereigns.length > 0 && (
                     <>
-                      <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Bonos Soberanos</p>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
-                        {sovereigns.slice(0, 8).map((q) => <BondCard key={q.symbol} q={q} />)}
+                      <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">
+                        Bonos Soberanos <span className="normal-case font-normal text-slate-600">(ley arg · ARS + cable USD)</span>
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 mb-6">
+                        {sovereigns.map((q) => <BondCard key={q.symbol} q={q} />)}
                       </div>
                     </>
                   )}
                   {letras.length > 0 && (
                     <>
-                      <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Letras / LECAP</p>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
+                      <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Letras del Tesoro</p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 mb-6">
                         {letras.map((q) => <BondCard key={q.symbol} q={q} />)}
                       </div>
                     </>
                   )}
-                  {sovereigns.length === 0 && (
+                  {sovereigns.length === 0 && letras.length === 0 && (
                     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                      {all.map((q) => <BondCard key={q.symbol} q={q} />)}
+                      {byma.publicBonds.slice(0, 16).map((q) => <BondCard key={q.symbol} q={q} />)}
                     </div>
                   )}
                 </>
@@ -610,48 +696,108 @@ export function MercadoClient() {
       {/* ================================================================
           ONs — BYMA
       ================================================================ */}
-      {byma && byma.negotiableObligations.length > 0 && (
-        <BlockSection title="Obligaciones Negociables" icon="🏢" color="blue">
-          <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-            ONs corporativas. Fuente: BYMA
-          </p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-            {byma.negotiableObligations.slice(0, 16).map((q) => <BondCard key={q.symbol} q={q} />)}
-          </div>
-        </BlockSection>
-      )}
+      {byma && byma.negotiableObligations.length > 0 && (() => {
+        // Show ONs with highest volume (or if no volume, first 16 sorted by symbol)
+        const sorted = [...byma.negotiableObligations]
+          .sort((a, b) => {
+            const va = a.volumeAmount ?? a.volume ?? 0;
+            const vb = b.volumeAmount ?? b.volume ?? 0;
+            return vb - va;
+          });
+        // Prefer USD ONs (most traded) — filter to EXT currency first
+        const usdOns = sorted.filter(q => q.currency === "USD").slice(0, 8);
+        const arsOns = sorted.filter(q => q.currency === "ARS").slice(0, 8);
+        const display = usdOns.length >= 4
+          ? [...usdOns.slice(0, 8), ...arsOns.slice(0, 8)]
+          : sorted.slice(0, 16);
+
+        return (
+          <BlockSection title="Obligaciones Negociables" icon="🏢" color="blue">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+              ONs corporativas. {byma.negotiableObligations.length} instrumentos disponibles. Fuente: BYMA
+              {!byma.marketOpen && <span className="ml-2 text-slate-400">· último cierre</span>}
+            </p>
+            {usdOns.length > 0 && arsOns.length > 0 ? (
+              <>
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">USD</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 mb-5">
+                  {usdOns.map((q) => <BondCard key={q.symbol} q={q} />)}
+                </div>
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">ARS</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                  {arsOns.map((q) => <BondCard key={q.symbol} q={q} />)}
+                </div>
+              </>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                {display.map((q) => <BondCard key={q.symbol} q={q} />)}
+              </div>
+            )}
+          </BlockSection>
+        );
+      })()}
 
       {/* ================================================================
-          ACCIONES LÍDERES + MERVAL — BYMA
+          RENTA VARIABLE — BYMA
       ================================================================ */}
       {byma && (byma.leadingEquity.length > 0 || byma.indices.length > 0) && (
         <BlockSection title="Renta Variable" icon="📈" color="emerald">
           <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-            Panel Merval e índices. Fuente: BYMA
+            Panel Merval e índices S&P BYMA. Fuente: BYMA
+            {byma && !byma.marketOpen && <span className="ml-2 text-slate-400">· último cierre</span>}
           </p>
 
-          {/* Indices */}
-          {byma.indices.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-5">
-              {byma.indices.map((idx) => (
-                <div key={idx.symbol} className="card card-dark p-4">
-                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">{idx.symbol}</p>
-                  <p className="text-base font-bold text-slate-900 dark:text-slate-100 tabular-nums">
-                    {idx.lastValue.toLocaleString("es-AR", { maximumFractionDigits: 0 })}
-                  </p>
-                  <p className={`text-xs font-semibold mt-0.5 ${idx.changePercent > 0 ? "text-emerald-500" : idx.changePercent < 0 ? "text-red-500" : "text-slate-400"}`}>
-                    {idx.changePercent > 0 ? "+" : ""}{idx.changePercent.toFixed(2)}%
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
+          {/* Key indices — filter to the most relevant */}
+          {(() => {
+            const KEY_IDX = ["M", "G", "SPBYICAP", "SPBYCDAP"];
+            const keyIndices = byma.indices
+              .filter((idx) => KEY_IDX.includes(idx.symbol) && idx.lastValue > 0)
+              .sort((a, b) => KEY_IDX.indexOf(a.symbol) - KEY_IDX.indexOf(b.symbol));
+            const otherIndices = byma.indices
+              .filter((idx) => !KEY_IDX.includes(idx.symbol) && idx.lastValue > 0)
+              .slice(0, 6);
+            const allIndices = [...keyIndices, ...otherIndices];
 
-          {/* Panel Merval */}
+            return allIndices.length > 0 ? (
+              <>
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Índices</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 mb-6">
+                  {allIndices.map((idx) => {
+                    const isUp   = idx.changePercent > 0;
+                    const isDown = idx.changePercent < 0;
+                    return (
+                      <div key={idx.symbol} className="card card-dark p-4">
+                        <div className="flex items-start justify-between mb-1.5 gap-1">
+                          <span className="text-xs font-bold text-slate-300 font-mono truncate">{idx.symbol}</span>
+                          <span className={`text-xs font-semibold shrink-0 tabular-nums ${isUp ? "text-emerald-500" : isDown ? "text-red-500" : "text-slate-400"}`}>
+                            {isUp ? "+" : ""}{idx.changePercent.toFixed(2)}%
+                          </span>
+                        </div>
+                        <p className="text-lg font-bold text-slate-900 dark:text-slate-100 tabular-nums leading-tight">
+                          {idx.lastValue >= 1e6
+                            ? `${(idx.lastValue / 1e6).toLocaleString("es-AR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}M`
+                            : idx.lastValue.toLocaleString("es-AR", { maximumFractionDigits: 0 })}
+                        </p>
+                        <p className="text-[10px] text-slate-500 mt-1 truncate leading-tight">{idx.description}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : null;
+          })()}
+
+          {/* Panel Merval — leading equities */}
           {byma.leadingEquity.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-              {byma.leadingEquity.slice(0, 12).map((q) => <BondCard key={q.symbol} q={q} />)}
-            </div>
+            <>
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Panel Merval</p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                {byma.leadingEquity
+                  .filter((q) => q.lastPrice != null && q.lastPrice > 0)
+                  .slice(0, 20)
+                  .map((q) => <BondCard key={q.symbol} q={q} />)}
+              </div>
+            </>
           )}
         </BlockSection>
       )}
