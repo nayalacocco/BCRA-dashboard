@@ -537,32 +537,33 @@ function MercadoContent({ data }: { data: MercadoData }) {
 
 // ---- Root export — fetches data client-side ----
 
-export function MercadoClient() {
-  const [data, setData]     = useState<MercadoData | null>(null);
-  const [error, setError]   = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Diagnostics = Record<string, any> | null;
 
-  useEffect(() => {
-    let cancelled = false;
+export function MercadoClient() {
+  const [data, setData]           = useState<MercadoData | null>(null);
+  const [error, setError]         = useState<string | null>(null);
+  const [diagnostics, setDiag]    = useState<Diagnostics>(null);
+  const [loading, setLoading]     = useState(true);
+
+  const load = () => {
     setLoading(true);
+    setError(null);
     fetch("/api/mae/mercado")
       .then(async (res) => {
         const json = await res.json();
-        if (cancelled) return;
-        if (json.error) {
-          setError(json.error);
-        } else {
+        setDiag(json.diagnostics ?? null);
+        if (json.data) {
           setData(json.data);
+        } else {
+          setError(json.error ?? "Sin datos");
         }
       })
-      .catch((err) => {
-        if (!cancelled) setError(String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, []);
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return <LoadingSkeleton />;
 
@@ -571,11 +572,21 @@ export function MercadoClient() {
       <div className="space-y-6">
         <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Mercado</h1>
         <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-6">
-          <p className="text-sm font-semibold text-red-700 dark:text-red-400 mb-1">Error al cargar datos del MAE</p>
-          <p className="text-xs text-red-600 dark:text-red-500 font-mono break-all">{error}</p>
+          <p className="text-sm font-semibold text-red-700 dark:text-red-400 mb-2">Error al cargar datos del MAE</p>
+          <p className="text-xs text-red-600 dark:text-red-500 font-mono break-all mb-4">{error}</p>
+          {diagnostics && (
+            <details className="mb-4">
+              <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-700 dark:hover:text-slate-300">
+                Ver diagnóstico técnico
+              </summary>
+              <pre className="mt-2 text-xs text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 rounded p-3 overflow-x-auto">
+                {JSON.stringify(diagnostics, null, 2)}
+              </pre>
+            </details>
+          )}
           <button
-            onClick={() => { setError(null); setLoading(true); fetch("/api/mae/mercado").then(r => r.json()).then(j => { setData(j.data); setError(j.error); }).catch(e => setError(String(e))).finally(() => setLoading(false)); }}
-            className="mt-4 text-xs bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 px-3 py-1.5 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors"
+            onClick={load}
+            className="text-xs bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 px-3 py-1.5 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors"
           >
             Reintentar
           </button>
