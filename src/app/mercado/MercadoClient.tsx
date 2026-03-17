@@ -875,19 +875,29 @@ function MAEPendingNotice() {
 
 // ---- BYMA bond card ----
 
-function BondCard({ q, onClick }: { q: BymaQuote; onClick?: () => void }) {
+function BondCard({
+  q, onClick, arsSecondaryPrice, totalArsVol,
+}: {
+  q: BymaQuote;
+  onClick?: () => void;
+  /** ARS-settlement price to show as secondary (smaller) below the USD price */
+  arsSecondaryPrice?: number | null;
+  /** Combined ARS-equivalent volume across all variants of this bond */
+  totalArsVol?: number | null;
+}) {
   const isUp   = (q.changePercent ?? 0) > 0;
   const isDown = (q.changePercent ?? 0) < 0;
   const pct    = q.changePercent;
 
-  // Format price: ARS bonds are quoted in nominal/100 units (e.g. 110,000),
-  // USD bonds in cent-dollars (e.g. 74.77)
-  const priceStr = q.lastPrice != null
-    ? q.lastPrice.toLocaleString("es-AR", {
-        minimumFractionDigits: q.lastPrice >= 100 ? 0 : 2,
-        maximumFractionDigits: q.lastPrice >= 100 ? 0 : 2,
-      })
-    : "—";
+  const fmtUSD = (p: number) => p.toLocaleString("es-AR", {
+    minimumFractionDigits: p >= 100 ? 0 : 2,
+    maximumFractionDigits: p >= 100 ? 0 : 2,
+  });
+
+  const priceStr = q.lastPrice != null ? fmtUSD(q.lastPrice) : "—";
+
+  // Display volume: prefer combined totalArsVol, fall back to quote's own volume
+  const displayVol = totalArsVol ?? q.volumeAmount ?? null;
 
   const Tag = onClick ? "button" : "div";
 
@@ -907,25 +917,32 @@ function BondCard({ q, onClick }: { q: BymaQuote; onClick?: () => void }) {
           {pct == null ? "—" : `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`}
         </span>
       </div>
-      <p className="text-lg font-bold text-slate-900 dark:text-slate-100 tabular-nums leading-tight">
-        {priceStr}
-      </p>
+
+      {/* Primary price — always USD */}
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-emerald-400/60 text-[10px] font-medium">USD</span>
+        <p className="text-lg font-bold text-slate-900 dark:text-slate-100 tabular-nums leading-tight">
+          {priceStr}
+        </p>
+      </div>
+
+      {/* Secondary ARS price */}
+      {arsSecondaryPrice != null && arsSecondaryPrice > 0 && (
+        <p className="text-[10px] text-slate-500 tabular-nums mt-0.5">
+          ~ARS {arsSecondaryPrice.toLocaleString("es-AR", { maximumFractionDigits: 0 })}
+        </p>
+      )}
+
       <div className="flex items-center gap-2 mt-1.5 text-xs text-slate-500">
-        {q.currency && (
-          <span className={`font-medium ${q.currency === "USD" ? "text-emerald-500/80" : "text-blue-400/80"}`}>
-            {q.currency}
-          </span>
-        )}
         {q.maturityDate && (
-          <>
-            <span>·</span>
-            <span>{q.maturityDate.slice(0, 7)}</span>
-          </>
+          <span>{q.maturityDate.slice(0, 7)}</span>
         )}
-        {q.volumeAmount != null && q.volumeAmount > 0 && (
+        {displayVol != null && displayVol > 0 && (
           <>
             <span>·</span>
-            <span>Vol {(q.volumeAmount / 1e6).toFixed(0)}M</span>
+            <span>Vol {displayVol >= 1e9
+              ? `${(displayVol / 1e9).toFixed(1)}B`
+              : `${(displayVol / 1e6).toFixed(0)}M`}</span>
           </>
         )}
         {onClick && (
@@ -1783,42 +1800,84 @@ export function MercadoClient() {
           ONs — BYMA
       ================================================================ */}
       {byma && byma.negotiableObligations.length > 0 && (() => {
-        // Show ONs with highest volume (or if no volume, first 16 sorted by symbol)
-        const sorted = [...byma.negotiableObligations]
-          .sort((a, b) => {
-            const va = a.volumeAmount ?? a.volume ?? 0;
-            const vb = b.volumeAmount ?? b.volume ?? 0;
-            return vb - va;
-          });
-        // Top 5 USD + top 5 ARS = 10 total, sorted by volume
-        const usdOns = sorted.filter(q => q.currency === "USD").slice(0, 5);
-        const arsOns = sorted.filter(q => q.currency === "ARS").slice(0, 5);
-        const display = usdOns.length >= 2
-          ? [...usdOns, ...arsOns]
-          : sorted.slice(0, 10);
+        // MEP rate used to convert USD-settled volumes to ARS-equivalent
+        const mepRate = fx?.mep?.venta ?? 1417;
+
+        // Group all ON tickers by their underlying bond (base = symbol without last char)
+        // e.g. YMCXD + YMCXO + YMCXC all map to base "YMCX"
+        const groupMap = new Map<string, {
+          usdQuote: BymaQuote | null;
+          arsQuote: BymaQuote | null;
+          totalArsVol: number;
+        }>();
+
+        for (const q of byma.negotiableObligations) {
+          const base = q.symbol.slice(0, -1);
+          if (!groupMap.has(base)) {
+            groupMap.set(base, { usdQuote: null, arsQuote: null, totalArsVol: 0 });
+          }
+          const grp = groupMap.get(base)!;
+
+          const vol = q.volumeAmount ?? q.volume ?? 0;
+
+          // Determine settlement type by last character
+          const suffix = q.symbol.slice(-1).toUpperCase();
+          const isUsdSettled = suffix === "D" || suffix === "C" || q.currency === "USD";
+          const isArsSettled = suffix === "O" || q.currency === "ARS";
+
+          // Accumulate ARS-equivalent volume
+          if (isUsdSettled) {
+            grp.totalArsVol += vol * mepRate;
+          } else {
+            grp.totalArsVol += vol;
+          }
+
+          // Prefer USD quote (D or C suffix) for primary display — TIR always calculable
+          if (isUsdSettled) {
+            // Pick whichever has more volume if multiple USD variants
+            if (!grp.usdQuote || vol > (grp.usdQuote.volumeAmount ?? grp.usdQuote.volume ?? 0)) {
+              grp.usdQuote = q;
+            }
+          } else if (isArsSettled) {
+            if (!grp.arsQuote || vol > (grp.arsQuote.volumeAmount ?? grp.arsQuote.volume ?? 0)) {
+              grp.arsQuote = q;
+            }
+          } else {
+            // Unknown suffix: treat as ARS if not yet claimed
+            if (!grp.usdQuote && !grp.arsQuote) grp.arsQuote = q;
+          }
+        }
+
+        // Sort groups by total ARS-equivalent volume descending, take top 10
+        const top10 = [...groupMap.entries()]
+          .sort(([, a], [, b]) => b.totalArsVol - a.totalArsVol)
+          .slice(0, 10);
 
         return (
           <BlockSection title="Obligaciones Negociables" icon="🏢" color="blue">
             <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-              ONs corporativas. {byma.negotiableObligations.length} instrumentos disponibles. Fuente: BYMA
+              Top 10 ONs corporativas por volumen (ARS + USD × MEP convertido). {byma.negotiableObligations.length} instrumentos disponibles. Fuente: BYMA
               {!byma.marketOpen && <span className="ml-2 text-slate-400">· último cierre</span>}
             </p>
-            {usdOns.length > 0 && arsOns.length > 0 ? (
-              <>
-                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">USD</p>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 mb-5">
-                  {usdOns.map((q) => <BondCard key={q.symbol} q={q} onClick={() => setSelectedON(q)} />)}
-                </div>
-                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">ARS</p>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  {arsOns.map((q) => <BondCard key={q.symbol} q={q} onClick={() => setSelectedON(q)} />)}
-                </div>
-              </>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                {display.map((q) => <BondCard key={q.symbol} q={q} onClick={() => setSelectedON(q)} />)}
-              </div>
-            )}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+              {top10.map(([base, grp]) => {
+                // Primary card: always USD quote (preferred for TIR), fallback to ARS
+                const primaryQuote = grp.usdQuote ?? grp.arsQuote;
+                if (!primaryQuote) return null;
+                const arsSecondaryPrice = grp.usdQuote && grp.arsQuote
+                  ? grp.arsQuote.lastPrice
+                  : null;
+                return (
+                  <BondCard
+                    key={base}
+                    q={primaryQuote}
+                    onClick={() => setSelectedON(primaryQuote)}
+                    arsSecondaryPrice={arsSecondaryPrice}
+                    totalArsVol={grp.totalArsVol}
+                  />
+                );
+              })}
+            </div>
           </BlockSection>
         );
       })()}
