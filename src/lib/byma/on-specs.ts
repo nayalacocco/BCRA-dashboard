@@ -81,11 +81,17 @@ export const ON_SPECS: Record<string, ONSpec> = {
   },
   "YMCX": {
     issuer:          "YPF S.A.",
-    couponRate:      null,
-    couponFrequency: 2,
-    maturityDate:    null, // ← completar
-    amortization:    "bullet",
+    couponRate:      8.75,           // confirmado: Aviso de Resultados Clase XXXI
+    couponFrequency: 2,              // semi-anual: 11-mar y 11-sep
+    maturityDate:    "2031-09-11",   // confirmado
+    amortization:    "amortizing",   // 20% sept-29, 20% sept-30, 60% sept-31
     currency:        "USD",
+    series:          "Clase XXXI · Ley NY · ISIN US984245AY67",
+    amortizationSchedule: [
+      { date: "2029-09-11", pct: 20 },
+      { date: "2030-09-11", pct: 20 },
+      { date: "2031-09-11", pct: 60 },
+    ],
   },
   "YMCJ": {
     issuer:          "YPF S.A.",
@@ -304,14 +310,25 @@ export const ON_SPECS: Record<string, ONSpec> = {
     maturityDate:    null,
     amortization:    "bullet",
     currency:        "USD",
+    series:          "Clase M",
   },
   "TLCP": {
     issuer:          "Telecom Argentina S.A.",
-    couponRate:      null,
-    couponFrequency: 2,
-    maturityDate:    null,
+    couponRate:      9.25,           // REGS 9.25% — confirmado BYMA 2025-03-16
+    couponFrequency: 2,              // semi-anual
+    maturityDate:    "2033-05-28",   // confirmado BYMA: "V. 28/05/33"
     amortization:    "bullet",
     currency:        "USD",
+    series:          "Clase P · Ley NY (REGS)",
+  },
+  "TLCT": {
+    issuer:          "Telecom Argentina S.A.",
+    couponRate:      null,           // ← completar
+    couponFrequency: 2,
+    maturityDate:    null,           // ← completar
+    amortization:    "bullet",
+    currency:        "USD",
+    series:          "Clase T",
   },
 
   // ── IRSA Propiedades Comerciales S.A. (IRC prefix) ───────────────────────
@@ -347,7 +364,7 @@ export const ON_SPECS: Record<string, ONSpec> = {
  *   "AL30"   → "AL30"  (sin sufijo, no se modifica)
  */
 export function getBaseSymbol(bymaTicker: string): string {
-  if (bymaTicker.length > 2 && /[DC]$/.test(bymaTicker)) {
+  if (bymaTicker.length > 2 && /[DCO]$/.test(bymaTicker)) {
     return bymaTicker.slice(0, -1);
   }
   return bymaTicker;

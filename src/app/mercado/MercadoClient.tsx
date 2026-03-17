@@ -35,6 +35,8 @@ import type { BymaData, BymaQuote } from "@/lib/byma/client";
 import type { MercadoData as MAEData, MAEQuote } from "@/lib/mae/mercado";
 import { getONSpec } from "@/lib/byma/on-specs";
 import type { ONSpec } from "@/lib/byma/on-specs";
+import { getProspectusFlow, compareFlows } from "@/lib/byma/on-flows";
+import type { ProspectusFlow, ProspectusFlowCupon } from "@/lib/byma/on-flows";
 import type { ONFlowData, ONFlowCupon } from "@/app/api/mae/on-flow/route";
 import type { ONInfoData } from "@/app/api/mae/on-info/route";
 
@@ -1087,20 +1089,37 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
     return () => { cancelled = true; clearTimeout(timeout); controller.abort(); };
   }, [q.symbol]);
 
-  // Derived from MAE flow (if available)
-  const maeDetalle = maeFlow?.detalle ?? [];
+  // --- Prospectus flow (hardcoded from official prospectus data) ---
+  const prospectusFlowSpec: ProspectusFlow | null = getProspectusFlow(q.symbol);
+  const prospectusDetalle: ProspectusFlowCupon[] = prospectusFlowSpec?.detalle ?? [];
+
+  // --- Determine which flow source to display, and comparison result ---
+  // Priority: MAE (live, authoritative) > Prospectus (hardcoded, verified)
+  const maeDetaille_raw = maeFlow?.detalle ?? [];
+  const maeDetalle = maeDetaille_raw;
+  const activeDetalle: ProspectusFlowCupon[] = maeDetalle.length > 0 ? maeDetalle : prospectusDetalle;
+
+  // Compare if both are available
+  const flowCompare = maeDetalle.length > 0 && prospectusDetalle.length > 0
+    ? compareFlows(prospectusDetalle, maeDetalle)
+    : maeDetalle.length > 0 ? "mae-only"
+    : prospectusDetalle.length > 0 ? "prospectus-only"
+    : null;
+
   const maePrice   = q.lastPrice ?? 0;
   // TIR is only meaningful when price and cash-flow currencies match.
   // e.g. YMCXD (USD price=109) + YMCXO flow (USD) → valid.
   //      YMCXO (ARS price=155,750) + YMCXO flow (USD) → currencies mismatch → skip.
-  const maeFlowCcy  = maeFlow?.moneda ?? "";  // "USD" | "ARS"
+  // Currency match check: only calculate TIR when flow ccy == price ccy
+  const maeFlowCcy  = maeFlow?.moneda ?? prospectusFlowSpec?.moneda ?? "";
   const quoteCcy    = q.currency ?? "";       // "USD" | "ARS"
   const maeCcyMatch = maeFlowCcy === quoteCcy || maeFlowCcy === "" || quoteCcy === "";
-  const maeTIR     = maeDetalle.length > 0 && maePrice > 0 && maeCcyMatch
-    ? calcTIRFromFlow(maePrice, maeDetalle, maeToday)
+  // Use activeDetalle for TIR/duration (MAE if available, else prospectus)
+  const maeTIR     = activeDetalle.length > 0 && maePrice > 0 && maeCcyMatch
+    ? calcTIRFromFlow(maePrice, activeDetalle, maeToday)
     : null;
   const maeDuration = maeTIR != null && maePrice > 0
-    ? calcDurationFromFlow(maePrice, maeTIR, maeDetalle, maeToday)
+    ? calcDurationFromFlow(maePrice, maeTIR, activeDetalle, maeToday)
     : null;
 
   // --- Price formatting ---
@@ -1339,7 +1358,7 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                     </p>
                   )}
                 </>
-              ) : maeDetalle.length > 0 && !maeCcyMatch ? (
+              ) : activeDetalle.length > 0 && !maeCcyMatch ? (
                 // Flow available but currencies differ (e.g. ARS-traded USD bond)
                 <div className="py-1">
                   <p className="text-sm text-slate-500">
@@ -1374,17 +1393,29 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Flujos de Caja <span className="text-slate-400 font-normal">(sobre 100 VN)</span></h3>
-              {maeDetalle.length > 0 ? (
-                <span className="text-[10px] bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400 px-2 py-0.5 rounded-full">MAE marketdata</span>
-              ) : cashFlows.length > 0 ? (
-                <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-500 px-2 py-0.5 rounded-full">
-                  {freqLabel(resolvedFreq)}{couponSource !== "static-db" && couponSource !== "byma-field" ? "*" : ""}
-                </span>
-              ) : null}
+              <div className="flex items-center gap-1.5">
+                {/* Source badge */}
+                {activeDetalle.length > 0 && (
+                  flowCompare === "match" ? (
+                    <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded-full">MAE ✓ prospecto</span>
+                  ) : flowCompare === "diff" ? (
+                    <span className="text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full">⚠ difiere MAE/prospecto</span>
+                  ) : flowCompare === "mae-only" ? (
+                    <span className="text-[10px] bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400 px-2 py-0.5 rounded-full">MAE marketdata</span>
+                  ) : flowCompare === "prospectus-only" ? (
+                    <span className="text-[10px] bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded-full">desde prospecto</span>
+                  ) : null
+                )}
+                {activeDetalle.length === 0 && cashFlows.length > 0 && (
+                  <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-500 px-2 py-0.5 rounded-full">
+                    {freqLabel(resolvedFreq)}{couponSource !== "static-db" && couponSource !== "byma-field" ? "*" : ""}
+                  </span>
+                )}
+              </div>
             </div>
 
-            {/* MAE actual flow table — priority over estimated BYMA flows */}
-            {maeDetalle.length > 0 ? (
+            {/* Flow table — MAE preferred, prospectus fallback, then BYMA estimates */}
+            {activeDetalle.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
@@ -1398,9 +1429,9 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                     </tr>
                   </thead>
                   <tbody>
-                    {maeDetalle.map((cf, i) => {
+                    {activeDetalle.map((cf, i) => {
                       const isPast = new Date(cf.fechaPago) <= maeToday;
-                      const isLast = i === maeDetalle.length - 1;
+                      const isLast = i === activeDetalle.length - 1;
                       return (
                         <tr key={i} className={`border-b border-slate-50 dark:border-slate-800/60 ${
                           isLast ? "bg-emerald-50 dark:bg-emerald-900/10 font-semibold" : ""
@@ -1432,11 +1463,14 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                     })()}
                   </tbody>
                 </table>
-                {maeFlow?.numeroCuponActual && (
-                  <p className="text-[10px] text-slate-400 px-4 py-2 border-t border-slate-100 dark:border-slate-800">
-                    Cupón actual: {maeFlow.numeroCuponActual} · Fuente: MAE marketdata (api.marketdata.mae.com.ar)
-                  </p>
-                )}
+                <p className="text-[10px] text-slate-400 px-4 py-2 border-t border-slate-100 dark:border-slate-800">
+                  {maeFlow?.numeroCuponActual && <>Cupón actual: {maeFlow.numeroCuponActual} · </>}
+                  {flowCompare === "match" && "Flujo verificado: MAE marketdata coincide con prospecto. "}
+                  {flowCompare === "diff" && <span className="text-amber-500">⚠ Flujo de MAE y prospecto difieren — se muestra MAE. </span>}
+                  {flowCompare === "prospectus-only" && <>Fuente: prospecto oficial · <a href={prospectusFlowSpec?.source} target="_blank" rel="noreferrer" className="underline">{prospectusFlowSpec?.source?.split("/").pop()}</a> · </>}
+                  {flowCompare === "mae-only" && "Fuente: MAE marketdata (api.marketdata.mae.com.ar) · "}
+                  Sobre 100 VN (valor nominal).
+                </p>
               </div>
             ) : cashFlows.length > 0 ? (
               <div className="overflow-x-auto">
@@ -1829,7 +1863,20 @@ export function MercadoClient() {
           totalArsVol: number;
         }>();
 
+        // Standard settlement suffixes in BYMA for ONs:
+        //   D = MEP (dólar MEP / liquidación local)
+        //   C = cable (CCL / exterior)
+        //   O = pesos (liquidación en ARS)
+        // Non-standard suffixes (Y=yen, Z, X, etc.) are exotic denominations —
+        // excluded from the top-10 display as they confuse ranking.
+        const STANDARD_SUFFIXES = new Set(["D", "C", "O"]);
+
         for (const q of byma.negotiableObligations) {
+          const suffix = q.symbol.slice(-1).toUpperCase();
+
+          // Skip exotic-denomination instruments (Yen, Yuan, etc.)
+          if (!STANDARD_SUFFIXES.has(suffix) && q.currency !== "ARS" && q.currency !== "USD") continue;
+
           const base = q.symbol.slice(0, -1);
           if (!groupMap.has(base)) {
             groupMap.set(base, { usdQuote: null, arsQuote: null, totalArsVol: 0 });
@@ -1840,27 +1887,27 @@ export function MercadoClient() {
           const vol = q.volumeAmount ?? 0;
           grp.totalArsVol += vol;
 
-          // Determine settlement type by last character suffix
-          const suffix = q.symbol.slice(-1).toUpperCase();
-          const isUsdSettled = q.currency === "USD" || suffix === "D" || suffix === "C";
-          const isArsSettled = q.currency === "ARS" || suffix === "O";
+          const isUsdSettled = suffix === "D" || suffix === "C" || q.currency === "USD";
+          const isArsSettled = suffix === "O" || q.currency === "ARS";
 
           if (isUsdSettled) {
-            // Prefer D (MEP) over C (cable) — D is the standard USD market for ONs.
-            // Among same-suffix variants, pick higher volume.
+            // Only accept as primary USD quote if it has a valid price
+            // (D suffix always beats C; among same suffix, higher volume wins)
             const curSuffix = grp.usdQuote?.symbol.slice(-1).toUpperCase() ?? "";
             const curVol = grp.usdQuote?.volumeAmount ?? 0;
+            const hasPrice = (q.lastPrice ?? 0) > 0;
             const preferNew =
-              !grp.usdQuote ||
-              (suffix === "D" && curSuffix !== "D") ||             // D always beats C
-              (suffix === curSuffix && vol > curVol);              // same type → higher vol wins
+              hasPrice && (
+                !grp.usdQuote ||
+                (suffix === "D" && curSuffix !== "D") ||
+                (suffix === curSuffix && vol > curVol)
+              );
             if (preferNew) grp.usdQuote = q;
           } else if (isArsSettled) {
             const curVol = grp.arsQuote?.volumeAmount ?? 0;
             if (!grp.arsQuote || vol > curVol) grp.arsQuote = q;
           } else {
-            // Unknown suffix: fallback — treat as ARS if nothing else claimed it
-            if (!grp.usdQuote && !grp.arsQuote) grp.arsQuote = q;
+            // Non-standard but currency-identified: add volume, skip as display quote
           }
         }
 
