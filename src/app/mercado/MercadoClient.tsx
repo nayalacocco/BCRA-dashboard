@@ -35,6 +35,8 @@ import type { BymaData, BymaQuote } from "@/lib/byma/client";
 import type { MercadoData as MAEData, MAEQuote } from "@/lib/mae/mercado";
 import { getONSpec } from "@/lib/byma/on-specs";
 import type { ONSpec } from "@/lib/byma/on-specs";
+import type { ONFlowData, ONFlowCupon } from "@/app/api/mae/on-flow/route";
+import type { ONInfoData } from "@/app/api/mae/on-info/route";
 
 // ---- Types for BCRA tasas (fetched from our proxy) ----
 
@@ -146,6 +148,521 @@ const MONTHS_ES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","
 function fmt(v: string) {
   const [y, m] = v.split("-");
   return `${MONTHS_ES[parseInt(m) - 1]}/${y.slice(2)}`;
+}
+
+// ---- MAE ON financial calculations ----
+
+/** Newton-Raphson IRR from cash flow schedule + dirty price (per 100 VN) */
+function calcTIRFromFlow(price: number, detalle: ONFlowCupon[], today: Date): number | null {
+  const cfs = detalle
+    .map((cf) => ({
+      days: Math.round((new Date(cf.fechaPago).getTime() - today.getTime()) / 86400000),
+      amount: cf.amasR,
+    }))
+    .filter((cf) => cf.days > 0);
+  if (!cfs.length) return null;
+
+  let r = 0.08;
+  for (let i = 0; i < 150; i++) {
+    let pv = 0, dpv = 0;
+    for (const cf of cfs) {
+      const t = cf.days / 365;
+      const disc = Math.pow(1 + r, t);
+      pv  += cf.amount / disc;
+      dpv -= (t * cf.amount) / ((1 + r) * disc);
+    }
+    const f = pv - price;
+    if (Math.abs(f) < 1e-9) break;
+    if (Math.abs(dpv) < 1e-12) break;
+    r -= f / dpv;
+    if (r < -0.99) r = -0.99;
+    if (r > 50)    r = 50;
+  }
+  return isNaN(r) || r < -0.99 || r > 50 ? null : r * 100;
+}
+
+/** Modified duration from cash flows + TIR (as %) */
+function calcDurationFromFlow(
+  price: number,
+  tirPct: number,
+  detalle: ONFlowCupon[],
+  today: Date,
+): { macaulay: number; modified: number } | null {
+  if (price <= 0) return null;
+  const r = tirPct / 100;
+  let mac = 0;
+  for (const cf of detalle) {
+    const days = Math.round((new Date(cf.fechaPago).getTime() - today.getTime()) / 86400000);
+    if (days <= 0) continue;
+    const t = days / 365;
+    mac += (t * cf.amasR) / Math.pow(1 + r, t);
+  }
+  const macaulay = mac / price;
+  const modified = macaulay / (1 + r);
+  return { macaulay, modified };
+}
+
+/** Accrued interest (intereses corridos) per 100 VN, act/act */
+function calcAccruedInterest(detalle: ONFlowCupon[], today: Date): number {
+  const todayMs = today.getTime();
+  const future  = detalle.filter((cf) => new Date(cf.fechaPago).getTime() > todayMs);
+  if (!future.length) return 0;
+  const next    = future[0];
+  const nextIdx = detalle.indexOf(next);
+  if (nextIdx === 0) return 0; // no previous date to measure from
+  const prevDate  = new Date(detalle[nextIdx - 1].fechaPago);
+  const nextDate  = new Date(next.fechaPago);
+  const periodMs  = nextDate.getTime() - prevDate.getTime();
+  const elapsedMs = todayMs - prevDate.getTime();
+  if (periodMs <= 0 || elapsedMs < 0) return 0;
+  return next.renta * (elapsedMs / periodMs);
+}
+
+/** Derive amortization type from detalle */
+function getAmortizationType(detalle: ONFlowCupon[]): string {
+  const withAmort = detalle.filter((cf) => cf.amortizacion > 0);
+  if (withAmort.length === 0) return "Sin datos";
+  if (withAmort.length === 1) return "Bullet";
+  return `Amortizable (${withAmort.length} pagos)`;
+}
+
+/** Derive coupon frequency label from payment dates */
+function getCouponFrequency(detalle: ONFlowCupon[]): string {
+  if (detalle.length < 2) return "—";
+  const gaps: number[] = [];
+  for (let i = 1; i < Math.min(detalle.length, 4); i++) {
+    const d0 = new Date(detalle[i - 1].fechaPago).getTime();
+    const d1 = new Date(detalle[i].fechaPago).getTime();
+    gaps.push(Math.round((d1 - d0) / (86400000 * 30)));
+  }
+  const avg = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+  if (avg <= 1.5)  return "Mensual";
+  if (avg <= 4)    return "Trimestral";
+  if (avg <= 7)    return "Semestral";
+  return "Anual";
+}
+
+/** Format a date string from MAE (ISO or date-only) to dd/mm/yyyy */
+function fmtDate(s: string): string {
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+/** Days between two dates */
+function daysBetween(a: Date, b: Date): number {
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
+}
+
+// ---- MAE ON Detail Modal ----
+
+function MAEONDetailModal({
+  quote,
+  onClose,
+}: {
+  quote: MAEQuote;
+  onClose: () => void;
+}) {
+  const [flow, setFlow]           = useState<ONFlowData | null>(null);
+  const [flowErr, setFlowErr]     = useState<string | null>(null);
+  const [flowLoading, setFlowLoading] = useState(true);
+  const [info, setInfo]           = useState<ONInfoData | null>(null);
+  const [infoLoading, setInfoLoading] = useState(true);
+
+  const ticker = quote.ticker.trim();
+  const today  = new Date();
+
+  useEffect(() => {
+    setFlowLoading(true);
+    setFlowErr(null);
+    fetch(`/api/mae/on-flow?ticker=${encodeURIComponent(ticker)}`)
+      .then((r) => r.json())
+      .then((j: { data: ONFlowData | null; error: string | null }) => {
+        if (j.data) setFlow(j.data);
+        else setFlowErr(j.error ?? "Sin datos");
+      })
+      .catch((e: Error) => setFlowErr(e.message))
+      .finally(() => setFlowLoading(false));
+
+    setInfoLoading(true);
+    fetch(`/api/mae/on-info?ticker=${encodeURIComponent(ticker)}`)
+      .then((r) => r.json())
+      .then((j: { data: ONInfoData | null; error: string | null }) => {
+        if (j.data) setInfo(j.data);
+      })
+      .catch(() => { /* non-critical */ })
+      .finally(() => setInfoLoading(false));
+  }, [ticker]);
+
+  // Derived from flow
+  const detalle        = flow?.detalle ?? [];
+  const futureDetalle  = detalle.filter((cf) => new Date(cf.fechaPago).getTime() > today.getTime());
+  const lastCF         = detalle.at(-1);
+  // Maturity: prefer on-info (always available), fall back to last cash flow
+  const maturityDate   = info?.fechaVencimiento
+    ? new Date(info.fechaVencimiento)
+    : lastCF ? new Date(lastCF.fechaPago) : null;
+  const maturityLabel  = info?.fechaVencimiento
+    ? fmtDate(info.fechaVencimiento)
+    : lastCF ? fmtDate(lastCF.fechaPago) : null;
+  const daysToMat      = maturityDate ? daysBetween(today, maturityDate) : null;
+  // Ley badge
+  const leyLabel       = info?.leyAplicable
+    ? (info.leyAplicable.toLowerCase().includes("extran") ? "Ley NY" : "Ley AR")
+    : null;
+  const price          = quote.precioUltimo;
+  const vr             = detalle.find((cf) => new Date(cf.fechaPago).getTime() > today.getTime())?.vr ?? 100;
+  // Only show paridad when VR is actually known from flow data (VR=100 default is ambiguous)
+  const parity         = detalle.length > 0 && vr > 0 ? (price / vr) * 100 : null;
+  const accrued        = detalle.length ? calcAccruedInterest(detalle, today) : 0;
+  // Only show clean price when we have accrued interest data from the flow schedule
+  const cleanPrice     = price > 0 && detalle.length > 0 ? price - accrued : null;
+  const tir            = price > 0 && detalle.length ? calcTIRFromFlow(price, detalle, today) : null;
+  const duration       = tir != null && price > 0 && detalle.length
+    ? calcDurationFromFlow(price, tir, detalle, today) : null;
+  const amortType      = detalle.length ? getAmortizationType(detalle) : "—";
+  const freq           = detalle.length ? getCouponFrequency(detalle) : "—";
+
+  // Last coupon rate (renta from first full-VR coupon)
+  const couponRate     = detalle.find((cf) => cf.renta > 0)?.renta ?? null;
+
+  // Moneda label — flow > info > quote fallback
+  const monedaLabel = flow?.moneda === "USD" ? "USD"
+    : flow?.moneda === "ARS" ? "ARS"
+    : info?.moneda?.toLowerCase().includes("dólar") ? "USD"
+    : info?.moneda?.toLowerCase().includes("peso") ? "ARS"
+    : quote.moneda === "D" ? "USD"
+    : quote.moneda === "P" ? "ARS"
+    : quote.moneda || "USD";
+
+  const isUp   = quote.variacion > 0;
+  const isDown = quote.variacion < 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 backdrop-blur-sm p-4 pt-8 pb-8"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-2xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl ring-1 ring-slate-200 dark:ring-slate-700"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* ── Header ── */}
+        <div className="flex items-start justify-between p-5 border-b border-slate-200 dark:border-slate-700">
+          <div className="flex-1 min-w-0 pr-4">
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <span className="font-mono font-bold text-xl text-slate-900 dark:text-slate-100">{ticker}</span>
+              <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400">
+                {monedaLabel}
+              </span>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500">
+                24hs
+              </span>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500">
+                CORP
+              </span>
+              {leyLabel && (
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${leyLabel === "Ley NY" ? "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400" : "bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400"}`}>
+                  {leyLabel}
+                </span>
+              )}
+            </div>
+            {info?.emisor ? (
+              <p className="text-sm font-semibold text-slate-800 dark:text-slate-200 leading-snug">{info.emisor}</p>
+            ) : null}
+            <p className="text-xs text-slate-500 dark:text-slate-500 leading-snug mt-0.5">{quote.descripcion}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="shrink-0 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            aria-label="Cerrar"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          {/* ── Price grid ── */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {/* Precio */}
+            <div className="col-span-2 sm:col-span-1 bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Precio ({monedaLabel})</p>
+              <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+                {price > 0 ? price.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) : "—"}
+              </p>
+              <div className="flex items-center gap-2 mt-1">
+                <span className={`text-sm font-semibold tabular-nums ${isUp ? "text-emerald-500" : isDown ? "text-red-500" : "text-slate-400"}`}>
+                  {quote.variacion !== 0 ? `${isUp ? "+" : ""}${quote.variacion.toFixed(2)}%` : "—"}
+                </span>
+                {quote.precioCierreAnterior > 0 && (
+                  <span className="text-xs text-slate-400">ant: {quote.precioCierreAnterior.toFixed(2)}</span>
+                )}
+              </div>
+            </div>
+
+            {/* Rango del día */}
+            <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4 space-y-1.5">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500">Rango del día</p>
+              <div className="space-y-1 text-xs tabular-nums text-slate-700 dark:text-slate-300">
+                {quote.precioMaximo > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Máx</span>
+                    <span className="font-medium">{quote.precioMaximo.toFixed(4)}</span>
+                  </div>
+                )}
+                {quote.precioMinimo > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Mín</span>
+                    <span className="font-medium">{quote.precioMinimo.toFixed(4)}</span>
+                  </div>
+                )}
+                {quote.montoAcumulado > 0 && (
+                  <div className="flex justify-between pt-1 border-t border-slate-200 dark:border-slate-700">
+                    <span className="text-slate-500">Vol.</span>
+                    <span className="font-medium">
+                      {quote.montoAcumulado >= 1e9
+                        ? `${(quote.montoAcumulado / 1e9).toFixed(2)}B`
+                        : `${(quote.montoAcumulado / 1e6).toFixed(0)}M`} ARS
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Vencimiento */}
+            <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Vencimiento</p>
+              {infoLoading && !maturityDate ? (
+                <div className="h-5 w-24 bg-slate-200 dark:bg-slate-700 rounded animate-pulse" />
+              ) : maturityLabel ? (
+                <>
+                  <p className="text-sm font-bold text-slate-900 dark:text-slate-100 leading-tight">
+                    {maturityLabel}
+                  </p>
+                  {daysToMat != null && (
+                    <p className="text-xs text-slate-500 mt-1">
+                      {daysToMat > 365
+                        ? `${(daysToMat / 365).toFixed(1)} años`
+                        : `${daysToMat} días`}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-slate-400">—</p>
+              )}
+            </div>
+          </div>
+
+          {/* ── Analytics grid ── */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {/* TIR */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">TIR anual</p>
+              {flowLoading ? (
+                <div className="h-7 w-16 bg-slate-200 dark:bg-slate-700 rounded animate-pulse" />
+              ) : tir != null ? (
+                <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+                  {tir.toFixed(2)}<span className="text-sm ml-0.5 text-slate-400">%</span>
+                </p>
+              ) : (
+                <p className="text-sm text-slate-400">—</p>
+              )}
+              <p className="text-[10px] text-slate-500 mt-1">calculada · precio sucio</p>
+            </div>
+
+            {/* Duration */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Duration Mod.</p>
+              {flowLoading ? (
+                <div className="h-7 w-16 bg-slate-200 dark:bg-slate-700 rounded animate-pulse" />
+              ) : duration ? (
+                <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+                  {duration.modified.toFixed(2)}<span className="text-sm ml-0.5 text-slate-400">a</span>
+                </p>
+              ) : (
+                <p className="text-sm text-slate-400">—</p>
+              )}
+              <p className="text-[10px] text-slate-500 mt-1">
+                {duration ? `Macaulay: ${duration.macaulay.toFixed(2)}a` : "años"}
+              </p>
+            </div>
+
+            {/* Paridad */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Paridad</p>
+              {parity != null ? (
+                <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+                  {parity.toFixed(1)}<span className="text-sm ml-0.5 text-slate-400">%</span>
+                </p>
+              ) : (
+                <p className="text-sm text-slate-400">—</p>
+              )}
+              <p className="text-[10px] text-slate-500 mt-1">precio / VR</p>
+            </div>
+
+            {/* Precio limpio */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Precio limpio</p>
+              {cleanPrice != null ? (
+                <>
+                  <p className="text-xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+                    {cleanPrice.toFixed(4)}
+                  </p>
+                  {accrued > 0 && (
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Int. corridos: +{accrued.toFixed(4)}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-slate-400">—</p>
+              )}
+            </div>
+          </div>
+
+          {/* ── Characteristics row ── */}
+          {!flowLoading && detalle.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              <div className="bg-slate-50 dark:bg-slate-800/40 rounded-lg px-3 py-2">
+                <p className="text-[10px] text-slate-500 mb-0.5">Tasa de cupón</p>
+                <p className="font-semibold text-slate-800 dark:text-slate-200">
+                  {couponRate != null ? `${couponRate.toFixed(4)}% s/VR` : "—"}
+                </p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-800/40 rounded-lg px-3 py-2">
+                <p className="text-[10px] text-slate-500 mb-0.5">Amortización</p>
+                <p className="font-semibold text-slate-800 dark:text-slate-200">{amortType}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-800/40 rounded-lg px-3 py-2">
+                <p className="text-[10px] text-slate-500 mb-0.5">Frecuencia cupón</p>
+                <p className="font-semibold text-slate-800 dark:text-slate-200">{freq}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-800/40 rounded-lg px-3 py-2">
+                <p className="text-[10px] text-slate-500 mb-0.5">Moneda pago</p>
+                <p className="font-semibold text-slate-800 dark:text-slate-200">{monedaLabel}</p>
+              </div>
+            </div>
+          )}
+
+          {/* ── Cash flow table ── */}
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Flujo de Fondos{" "}
+                <span className="text-slate-400 font-normal text-xs">(sobre 100 VN)</span>
+              </h3>
+              {flow?.numeroCuponActual && (
+                <span className="text-[10px] bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded-full">
+                  Cupón actual: {flow.numeroCuponActual}
+                </span>
+              )}
+            </div>
+
+            {flowLoading ? (
+              <div className="p-6 flex items-center justify-center">
+                <div className="flex items-center gap-2 text-sm text-slate-400">
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Cargando flujos…
+                </div>
+              </div>
+            ) : flowErr ? (
+              <div className="px-4 py-5">
+                <p className="text-sm text-amber-600 dark:text-amber-400">{flowErr}</p>
+                <p className="text-xs text-slate-400 mt-1">
+                  Flujo no disponible para este ticker en MAE marketdata.
+                </p>
+              </div>
+            ) : detalle.length > 0 ? (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-slate-500 border-b border-slate-100 dark:border-slate-800">
+                        <th className="text-left px-4 py-2 font-medium">Fecha pago</th>
+                        <th className="text-right px-3 py-2 font-medium">Nº</th>
+                        <th className="text-right px-3 py-2 font-medium">VR</th>
+                        <th className="text-right px-3 py-2 font-medium">Renta</th>
+                        <th className="text-right px-3 py-2 font-medium">Amort.</th>
+                        <th className="text-right px-4 py-2 font-medium">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detalle.map((cf, i) => {
+                        const isPast   = new Date(cf.fechaPago).getTime() <= today.getTime();
+                        const isFinal  = i === detalle.length - 1;
+                        return (
+                          <tr
+                            key={i}
+                            className={`border-b border-slate-50 dark:border-slate-800/60 ${
+                              isPast    ? "opacity-40"
+                              : isFinal ? "bg-emerald-50 dark:bg-emerald-900/10 font-semibold"
+                              :           "text-slate-700 dark:text-slate-300"
+                            }`}
+                          >
+                            <td className="px-4 py-2 font-mono">
+                              {fmtDate(cf.fechaPago)}
+                              {isFinal && (
+                                <span className="ml-1.5 text-[9px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 px-1.5 py-0.5 rounded">final</span>
+                              )}
+                              {isPast && (
+                                <span className="ml-1.5 text-[9px] bg-slate-100 dark:bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded">pagado</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-slate-500">{cf.numeroCupon}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{cf.vr.toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">
+                              {cf.renta > 0 ? cf.renta.toFixed(4) : "—"}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums">
+                              {cf.amortizacion > 0 ? cf.amortizacion.toFixed(2) : "—"}
+                            </td>
+                            <td className="px-4 py-2 text-right tabular-nums font-medium">
+                              {cf.amasR.toFixed(4)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {/* Totals row */}
+                      <tr className="bg-slate-50 dark:bg-slate-800/40 font-semibold text-slate-900 dark:text-slate-100 text-xs">
+                        <td className="px-4 py-2 text-slate-500 font-normal" colSpan={3}>Total recibido</td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {futureDetalle.reduce((s, c) => s + c.renta, 0).toFixed(2)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {futureDetalle.reduce((s, c) => s + c.amortizacion, 0).toFixed(2)}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums">
+                          {futureDetalle.reduce((s, c) => s + c.amasR, 0).toFixed(2)}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[10px] text-slate-400 px-4 py-2 border-t border-slate-100 dark:border-slate-800">
+                  * Valores sobre 100 VN · Fuente: MAE marketdata (A3 Mercados) · TIR y Duration calculadas sobre precio sucio
+                </p>
+              </>
+            ) : (
+              <div className="px-4 py-5">
+                <p className="text-sm text-slate-400">Sin flujos disponibles para este instrumento.</p>
+              </div>
+            )}
+          </div>
+
+          {/* ── Disclaimer ── */}
+          <p className="text-[10px] text-slate-400 leading-relaxed">
+            Datos de mercado: MAE (mercado abierto electrónico) · Flujos: MAE marketdata (A3 Mercados).
+            TIR, Duration y Paridad son estimaciones calculadas y no constituyen asesoramiento de inversión.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ---- FX Rate card ----
@@ -884,7 +1401,8 @@ export function MercadoClient() {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState<string | null>(null);
   const [period, setPeriod]       = useState<Period>("6m");
-  const [selectedON, setSelectedON] = useState<BymaQuote | null>(null);
+  const [selectedON, setSelectedON]       = useState<BymaQuote | null>(null);
+  const [selectedMAEON, setSelectedMAEON] = useState<MAEQuote | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -935,7 +1453,8 @@ export function MercadoClient() {
   return (
     <div className="space-y-10">
       {/* ON Detail Modal */}
-      {selectedON && <ONDetailModal quote={selectedON} onClose={() => setSelectedON(null)} />}
+      {selectedON    && <ONDetailModal    quote={selectedON}    onClose={() => setSelectedON(null)} />}
+      {selectedMAEON && <MAEONDetailModal quote={selectedMAEON} onClose={() => setSelectedMAEON(null)} />}
 
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-4">
@@ -1345,66 +1864,121 @@ export function MercadoClient() {
               );
             })()}
 
-            {/* ── Renta fija MAE ─────────────────────────────────────────── */}
-            {mae.rentafija.length > 0 && (
-              <div>
-                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">
-                  Renta Fija MAE ({mae.rentafija.length} instrumentos hoy)
-                </p>
-                <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 border-b border-slate-200 dark:border-slate-700">
-                        <th className="text-left px-4 py-2.5 font-medium">Ticker</th>
-                        <th className="text-left px-3 py-2.5 font-medium hidden sm:table-cell">Descripción</th>
-                        <th className="text-right px-3 py-2.5 font-medium">Precio</th>
-                        <th className="text-right px-3 py-2.5 font-medium hidden sm:table-cell">Var%</th>
-                        <th className="text-right px-4 py-2.5 font-medium">Monto</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {/* deduplicate by ticker (MAE lists BT+GT segments) */}
-                      {Array.from(
-                        mae.rentafija
-                          .reduce((m, q) => {
-                            const prev = m.get(q.ticker);
-                            if (!prev || q.montoAcumulado > (prev as MAEQuote).montoAcumulado) m.set(q.ticker, q);
-                            return m;
-                          }, new Map<string, MAEQuote>())
-                          .values()
-                      )
-                        .sort((a, b) => (b as MAEQuote).montoAcumulado - (a as MAEQuote).montoAcumulado)
-                        .slice(0, 20)
-                        .map((q) => {
-                          const mq = q as MAEQuote;
+            {/* ── Top 10 ONs por volumen (MAE) ─────────────────────────── */}
+            {mae.rentafija.length > 0 && (() => {
+              // 1. Deduplicate by ticker (MAE lists BT + GT segments — keep highest volume)
+              const dedupMap = new Map<string, MAEQuote>();
+              for (const q of mae.rentafija) {
+                const prev = dedupMap.get(q.ticker);
+                if (!prev || q.montoAcumulado > prev.montoAcumulado) dedupMap.set(q.ticker, q);
+              }
+
+              // 2. Filter to ONs: tipoEmision === "ON", or fallback to descripcion heuristic
+              const allDedup = Array.from(dedupMap.values());
+              const onFilter = allDedup.filter((q) => {
+                if (q.tipoEmision) return q.tipoEmision.toUpperCase() === "ON";
+                const d = q.descripcion.toUpperCase();
+                return d.includes(" ON ") || d.includes("OBL") || d.includes("OBLIG");
+              });
+              // If filter yields nothing (field missing), fall back to all dedup
+              const candidates = onFilter.length > 0 ? onFilter : allDedup;
+
+              // 3. Sort by monto desc, take top 10
+              const top10 = candidates
+                .filter((q) => q.precioUltimo > 0)
+                .sort((a, b) => b.montoAcumulado - a.montoAcumulado)
+                .slice(0, 10);
+
+              if (!top10.length) return null;
+
+              return (
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+                      Top 10 ONs · Última sesión MAE
+                    </p>
+                    <span className="text-[10px] text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                      Selección por volumen operado
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 border-b border-slate-200 dark:border-slate-700">
+                          <th className="text-left px-4 py-2.5 font-medium">#</th>
+                          <th className="text-left px-3 py-2.5 font-medium">Ticker</th>
+                          <th className="text-left px-3 py-2.5 font-medium hidden md:table-cell">Descripción</th>
+                          <th className="text-right px-3 py-2.5 font-medium">Precio USD</th>
+                          <th className="text-right px-3 py-2.5 font-medium">Var%</th>
+                          <th className="text-right px-3 py-2.5 font-medium hidden sm:table-cell">Volumen ARS</th>
+                          <th className="px-4 py-2.5 font-medium text-center">Detalle</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {top10.map((mq, idx) => {
                           const isUp   = mq.variacion > 0;
                           const isDown = mq.variacion < 0;
+                          const descClean = mq.descripcion
+                            .replace(mq.ticker.trim(), "")
+                            .replace(/^\s*[-–\s]+/, "")
+                            .trim()
+                            || mq.descripcion;
                           return (
-                            <tr key={mq.ticker + mq.plazo} className="border-b border-slate-50 dark:border-slate-800/60 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
-                              <td className="px-4 py-2 font-mono font-semibold text-slate-900 dark:text-slate-100">{mq.ticker}</td>
-                              <td className="px-3 py-2 text-slate-500 hidden sm:table-cell max-w-[200px] truncate">{mq.descripcion.replace(mq.ticker, "").replace(/^\s*\(/, "").replace(/\)\s*$/, "").trim()}</td>
-                              <td className="px-3 py-2 text-right tabular-nums font-medium text-slate-900 dark:text-slate-100">{mq.precioUltimo > 0 ? mq.precioUltimo.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) : "—"}</td>
-                              <td className={`px-3 py-2 text-right tabular-nums hidden sm:table-cell font-medium ${isUp ? "text-emerald-500" : isDown ? "text-red-500" : "text-slate-400"}`}>
-                                {mq.variacion !== 0 ? `${mq.variacion > 0 ? "+" : ""}${mq.variacion.toFixed(2)}%` : "—"}
+                            <tr
+                              key={mq.ticker}
+                              className="border-b border-slate-50 dark:border-slate-800/60 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors"
+                            >
+                              <td className="px-4 py-3 text-slate-400 tabular-nums">{idx + 1}</td>
+                              <td className="px-3 py-3">
+                                <span className="font-mono font-bold text-slate-900 dark:text-slate-100">
+                                  {mq.ticker.trim()}
+                                </span>
                               </td>
-                              <td className="px-4 py-2 text-right tabular-nums text-slate-500">
+                              <td className="px-3 py-3 text-slate-500 hidden md:table-cell max-w-[220px] truncate leading-tight">
+                                {descClean}
+                              </td>
+                              <td className="px-3 py-3 text-right tabular-nums font-semibold text-slate-900 dark:text-slate-100">
+                                {mq.precioUltimo.toLocaleString("es-AR", {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 4,
+                                })}
+                              </td>
+                              <td className={`px-3 py-3 text-right tabular-nums font-semibold ${
+                                isUp ? "text-emerald-500" : isDown ? "text-red-500" : "text-slate-400"
+                              }`}>
+                                {mq.variacion !== 0
+                                  ? `${isUp ? "+" : ""}${mq.variacion.toFixed(2)}%`
+                                  : "—"}
+                              </td>
+                              <td className="px-3 py-3 text-right tabular-nums text-slate-500 hidden sm:table-cell">
                                 {mq.montoAcumulado >= 1e9
-                                  ? `${(mq.montoAcumulado / 1e9).toFixed(1)} B`
+                                  ? `${(mq.montoAcumulado / 1e9).toFixed(2)} B`
                                   : mq.montoAcumulado >= 1e6
                                   ? `${(mq.montoAcumulado / 1e6).toFixed(0)} M`
                                   : mq.montoAcumulado > 0
-                                  ? `${mq.montoAcumulado.toLocaleString("es-AR")}`
+                                  ? mq.montoAcumulado.toLocaleString("es-AR")
                                   : "—"}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                <button
+                                  onClick={() => setSelectedMAEON(mq)}
+                                  className="text-[11px] font-medium px-3 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors whitespace-nowrap"
+                                >
+                                  Ver detalle
+                                </button>
                               </td>
                             </tr>
                           );
                         })}
-                    </tbody>
-                  </table>
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1.5">
+                    Fuente: MAE · selección por volumen en pesos de la última sesión · {mae.rentafija.length} instrumentos en snapshot
+                  </p>
                 </div>
-                <p className="text-[10px] text-slate-400 mt-1.5">Fuente: MAE · Mercado Abierto Electrónico. Top 20 por monto. Segmento bilateral + garantizado.</p>
-              </div>
-            )}
+              );
+            })()}
           </div>
         ) : (
           /* MAE key not set in Vercel yet */
