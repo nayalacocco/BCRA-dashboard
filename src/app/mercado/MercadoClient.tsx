@@ -1054,25 +1054,37 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
 
   // --- MAE flow data (api.marketdata.mae.com.ar) ---
   // Try symbol as-is, then with last char replaced by "O" (e.g. YMCXD → YMCXO)
-  const [maeFlow, setMaeFlow] = useState<ONFlowData | null>(null);
+  const [maeFlow, setMaeFlow]           = useState<ONFlowData | null>(null);
+  const [maeFlowLoaded, setMaeFlowLoaded] = useState(false);
   const maeToday = new Date();
   useEffect(() => {
+    setMaeFlow(null);
+    setMaeFlowLoaded(false);
     const candidates = [q.symbol, q.symbol.slice(0, -1) + "O"]
       .filter((t, i, arr) => arr.indexOf(t) === i); // deduplicate
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000); // 8s max
     let cancelled = false;
     (async () => {
       for (const candidate of candidates) {
+        if (controller.signal.aborted) break;
         try {
-          const r = await fetch(`/api/mae/on-flow?ticker=${encodeURIComponent(candidate)}`);
+          const r = await fetch(`/api/mae/on-flow?ticker=${encodeURIComponent(candidate)}`, {
+            signal: controller.signal,
+          });
           const j = await r.json() as { data: ONFlowData | null; error: string | null };
           if (!cancelled && j.data && j.data.detalle.length > 0) {
             setMaeFlow(j.data);
+            setMaeFlowLoaded(true);
+            clearTimeout(timeout);
             return;
           }
-        } catch { /* try next */ }
+        } catch { /* timeout abort or network error — try next candidate */ }
       }
+      if (!cancelled) setMaeFlowLoaded(true);
+      clearTimeout(timeout);
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearTimeout(timeout); controller.abort(); };
   }, [q.symbol]);
 
   // Derived from MAE flow (if available)
@@ -1346,7 +1358,12 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                   {tirNote && <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 leading-relaxed">{tirNote}</p>}
                 </>
               ) : tirMethod === "pending" ? (
-                <p className="text-sm text-slate-400 py-1">Cargando flujo MAE…</p>
+                maeFlowLoaded
+                  ? <p className="text-sm text-slate-400 py-1">Sin datos de cupón disponibles — consultá el prospecto.</p>
+                  : <p className="text-sm text-slate-400 py-1 flex items-center gap-2">
+                      <span className="inline-block w-3 h-3 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin shrink-0" />
+                      Consultando flujo MAE…
+                    </p>
               ) : (
                 <p className="text-sm text-slate-400 py-1">No disponible — precio o vencimiento faltante.</p>
               )}
@@ -1474,8 +1491,10 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                       </div>
                     </div>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      Cargando flujo desde MAE marketdata… si no está disponible, consultá el prospecto en{" "}
-                      <span className="font-medium text-blue-500">cnv.gob.ar</span>.
+                      {maeFlowLoaded
+                        ? <>Flujo de caja no disponible en MAE marketdata. Consultá el prospecto en{" "}<span className="font-medium text-blue-500">cnv.gob.ar</span>.</>
+                        : <span className="flex items-center gap-2"><span className="inline-block w-3 h-3 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin shrink-0" />Consultando flujo MAE…</span>
+                      }
                     </p>
                   </div>
                 ) : (
@@ -1800,11 +1819,10 @@ export function MercadoClient() {
           ONs — BYMA
       ================================================================ */}
       {byma && byma.negotiableObligations.length > 0 && (() => {
-        // MEP rate used to convert USD-settled volumes to ARS-equivalent
-        const mepRate = fx?.mep?.venta ?? 1417;
-
         // Group all ON tickers by their underlying bond (base = symbol without last char)
         // e.g. YMCXD + YMCXO + YMCXC all map to base "YMCX"
+        // NOTE: BYMA's volumeAmount is always in ARS for all bonds (already converted
+        // for EXT/USD-denominated instruments). So we sum directly — no MEP multiplication.
         const groupMap = new Map<string, {
           usdQuote: BymaQuote | null;
           arsQuote: BymaQuote | null;
@@ -1818,37 +1836,35 @@ export function MercadoClient() {
           }
           const grp = groupMap.get(base)!;
 
-          const vol = q.volumeAmount ?? q.volume ?? 0;
+          // volumeAmount is already in ARS for all BYMA instruments — sum directly
+          const vol = q.volumeAmount ?? 0;
+          grp.totalArsVol += vol;
 
-          // Determine settlement type by last character
+          // Determine settlement type by last character suffix
           const suffix = q.symbol.slice(-1).toUpperCase();
-          const isUsdSettled = suffix === "D" || suffix === "C" || q.currency === "USD";
-          const isArsSettled = suffix === "O" || q.currency === "ARS";
+          const isUsdSettled = q.currency === "USD" || suffix === "D" || suffix === "C";
+          const isArsSettled = q.currency === "ARS" || suffix === "O";
 
-          // Accumulate ARS-equivalent volume
           if (isUsdSettled) {
-            grp.totalArsVol += vol * mepRate;
-          } else {
-            grp.totalArsVol += vol;
-          }
-
-          // Prefer USD quote (D or C suffix) for primary display — TIR always calculable
-          if (isUsdSettled) {
-            // Pick whichever has more volume if multiple USD variants
-            if (!grp.usdQuote || vol > (grp.usdQuote.volumeAmount ?? grp.usdQuote.volume ?? 0)) {
-              grp.usdQuote = q;
-            }
+            // Prefer D (MEP) over C (cable) — D is the standard USD market for ONs.
+            // Among same-suffix variants, pick higher volume.
+            const curSuffix = grp.usdQuote?.symbol.slice(-1).toUpperCase() ?? "";
+            const curVol = grp.usdQuote?.volumeAmount ?? 0;
+            const preferNew =
+              !grp.usdQuote ||
+              (suffix === "D" && curSuffix !== "D") ||             // D always beats C
+              (suffix === curSuffix && vol > curVol);              // same type → higher vol wins
+            if (preferNew) grp.usdQuote = q;
           } else if (isArsSettled) {
-            if (!grp.arsQuote || vol > (grp.arsQuote.volumeAmount ?? grp.arsQuote.volume ?? 0)) {
-              grp.arsQuote = q;
-            }
+            const curVol = grp.arsQuote?.volumeAmount ?? 0;
+            if (!grp.arsQuote || vol > curVol) grp.arsQuote = q;
           } else {
-            // Unknown suffix: treat as ARS if not yet claimed
+            // Unknown suffix: fallback — treat as ARS if nothing else claimed it
             if (!grp.usdQuote && !grp.arsQuote) grp.arsQuote = q;
           }
         }
 
-        // Sort groups by total ARS-equivalent volume descending, take top 10
+        // Sort groups by combined ARS volume descending, take top 10
         const top10 = [...groupMap.entries()]
           .sort(([, a], [, b]) => b.totalArsVol - a.totalArsVol)
           .slice(0, 10);
@@ -1856,7 +1872,7 @@ export function MercadoClient() {
         return (
           <BlockSection title="Obligaciones Negociables" icon="🏢" color="blue">
             <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-              Top 10 ONs corporativas por volumen (ARS + USD × MEP convertido). {byma.negotiableObligations.length} instrumentos disponibles. Fuente: BYMA
+              Top 10 ONs corporativas por volumen negociado. {byma.negotiableObligations.length} instrumentos disponibles. Fuente: BYMA
               {!byma.marketOpen && <span className="ml-2 text-slate-400">· último cierre</span>}
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
