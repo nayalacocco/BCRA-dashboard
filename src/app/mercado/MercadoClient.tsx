@@ -1035,6 +1035,45 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
 
+  // --- MAE flow data (api.marketdata.mae.com.ar) ---
+  // Try symbol as-is, then with last char replaced by "O" (e.g. YMCXD → YMCXO)
+  const [maeFlow, setMaeFlow] = useState<ONFlowData | null>(null);
+  const maeToday = new Date();
+  useEffect(() => {
+    const candidates = [q.symbol, q.symbol.slice(0, -1) + "O"]
+      .filter((t, i, arr) => arr.indexOf(t) === i); // deduplicate
+    let cancelled = false;
+    (async () => {
+      for (const candidate of candidates) {
+        try {
+          const r = await fetch(`/api/mae/on-flow?ticker=${encodeURIComponent(candidate)}`);
+          const j = await r.json() as { data: ONFlowData | null; error: string | null };
+          if (!cancelled && j.data && j.data.detalle.length > 0) {
+            setMaeFlow(j.data);
+            return;
+          }
+        } catch { /* try next */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [q.symbol]);
+
+  // Derived from MAE flow (if available)
+  const maeDetalle = maeFlow?.detalle ?? [];
+  const maePrice   = q.lastPrice ?? 0;
+  // TIR is only meaningful when price and cash-flow currencies match.
+  // e.g. YMCXD (USD price=109) + YMCXO flow (USD) → valid.
+  //      YMCXO (ARS price=155,750) + YMCXO flow (USD) → currencies mismatch → skip.
+  const maeFlowCcy  = maeFlow?.moneda ?? "";  // "USD" | "ARS"
+  const quoteCcy    = q.currency ?? "";       // "USD" | "ARS"
+  const maeCcyMatch = maeFlowCcy === quoteCcy || maeFlowCcy === "" || quoteCcy === "";
+  const maeTIR     = maeDetalle.length > 0 && maePrice > 0 && maeCcyMatch
+    ? calcTIRFromFlow(maePrice, maeDetalle, maeToday)
+    : null;
+  const maeDuration = maeTIR != null && maePrice > 0
+    ? calcDurationFromFlow(maePrice, maeTIR, maeDetalle, maeToday)
+    : null;
+
   // --- Price formatting ---
   const price = q.lastPrice;
   const priceStr = price != null
@@ -1247,21 +1286,41 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">TIR / Rendimiento</h3>
-              {tirMethod === "byma" && (
+              {maeTIR != null ? (
+                <span className="text-[10px] bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400 px-2 py-0.5 rounded-full font-medium">MAE marketdata</span>
+              ) : tirMethod === "byma" ? (
                 <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded-full font-medium">BYMA</span>
-              )}
-              {tirMethod === "computed" && couponSource === "static-db" && (
+              ) : tirMethod === "computed" && couponSource === "static-db" ? (
                 <span className="text-[10px] bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded-full font-medium">DB interna</span>
-              )}
-              {tirMethod === "computed" && couponSource !== "static-db" && (
+              ) : tirMethod === "computed" ? (
                 <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-500 px-2 py-0.5 rounded-full font-medium">Estimada</span>
-              )}
-              {tirMethod === "pending" && (
-                <span className="text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 px-2 py-0.5 rounded-full font-medium">Datos pendientes</span>
-              )}
+              ) : null}
             </div>
             <div className="px-4 py-3">
-              {tirValue != null && tirValue > -99 ? (
+              {/* MAE flow-based TIR takes priority */}
+              {maeTIR != null ? (
+                <>
+                  <p className="text-3xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+                    {maeTIR.toFixed(2)}<span className="text-xl font-semibold text-slate-400 ml-1">%</span>
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">TIR anual · calculada sobre precio sucio</p>
+                  {maeDuration && (
+                    <p className="text-xs text-slate-400 mt-1">
+                      Duration mod.: {maeDuration.modified.toFixed(2)}a · Macaulay: {maeDuration.macaulay.toFixed(2)}a
+                    </p>
+                  )}
+                </>
+              ) : maeDetalle.length > 0 && !maeCcyMatch ? (
+                // Flow available but currencies differ (e.g. ARS-traded USD bond)
+                <div className="py-1">
+                  <p className="text-sm text-slate-500">
+                    Flujo disponible en <span className="font-medium">{maeFlowCcy}</span> · instrumento cotiza en <span className="font-medium">{quoteCcy}</span>
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    TIR no calculable sin tipo de cambio implícito. Ver flujo ↓ o consultar la versión {maeFlowCcy === "USD" ? "USD" : "ARS"} del bono.
+                  </p>
+                </div>
+              ) : tirValue != null && tirValue > -99 ? (
                 <>
                   <p className="text-3xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
                     {tirValue.toFixed(2)}<span className="text-xl font-semibold text-slate-400 ml-1">%</span>
@@ -1270,14 +1329,7 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                   {tirNote && <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 leading-relaxed">{tirNote}</p>}
                 </>
               ) : tirMethod === "pending" ? (
-                <div className="py-1">
-                  <p className="text-sm text-amber-600 dark:text-amber-400 font-medium">Cupón no disponible en API gratuita</p>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Completar <code className="bg-slate-100 dark:bg-slate-800 px-1 rounded text-[10px]">couponRate</code> en{" "}
-                    <code className="bg-slate-100 dark:bg-slate-800 px-1 rounded text-[10px]">src/lib/byma/on-specs.ts</code>{" "}
-                    o integrar API A3.
-                  </p>
-                </div>
+                <p className="text-sm text-slate-400 py-1">Cargando flujo MAE…</p>
               ) : (
                 <p className="text-sm text-slate-400 py-1">No disponible — precio o vencimiento faltante.</p>
               )}
@@ -1288,14 +1340,71 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Flujos de Caja <span className="text-slate-400 font-normal">(sobre 100 VN)</span></h3>
-              {cashFlows.length > 0 && (
+              {maeDetalle.length > 0 ? (
+                <span className="text-[10px] bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400 px-2 py-0.5 rounded-full">MAE marketdata</span>
+              ) : cashFlows.length > 0 ? (
                 <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-500 px-2 py-0.5 rounded-full">
                   {freqLabel(resolvedFreq)}{couponSource !== "static-db" && couponSource !== "byma-field" ? "*" : ""}
                 </span>
-              )}
+              ) : null}
             </div>
 
-            {cashFlows.length > 0 ? (
+            {/* MAE actual flow table — priority over estimated BYMA flows */}
+            {maeDetalle.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-slate-500 border-b border-slate-100 dark:border-slate-800">
+                      <th className="text-left px-4 py-2 font-medium">Fecha pago</th>
+                      <th className="text-right px-3 py-2 font-medium">Nº</th>
+                      <th className="text-right px-3 py-2 font-medium">VR</th>
+                      <th className="text-right px-3 py-2 font-medium">Renta</th>
+                      <th className="text-right px-3 py-2 font-medium">Amort.</th>
+                      <th className="text-right px-4 py-2 font-medium">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {maeDetalle.map((cf, i) => {
+                      const isPast = new Date(cf.fechaPago) <= maeToday;
+                      const isLast = i === maeDetalle.length - 1;
+                      return (
+                        <tr key={i} className={`border-b border-slate-50 dark:border-slate-800/60 ${
+                          isLast ? "bg-emerald-50 dark:bg-emerald-900/10 font-semibold" : ""
+                        } ${isPast ? "opacity-40" : ""} text-slate-700 dark:text-slate-300`}>
+                          <td className="px-4 py-2 font-mono text-slate-800 dark:text-slate-200">
+                            {cf.fechaPago.slice(0, 10).split("-").reverse().join("/")}
+                            {isPast && <span className="ml-1.5 text-[9px] text-slate-400 bg-slate-100 dark:bg-slate-800 px-1 rounded">pagado</span>}
+                            {isLast && !isPast && <span className="ml-1.5 text-[9px] text-emerald-600 bg-emerald-100 dark:bg-emerald-900/40 px-1 rounded">final</span>}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-slate-500">{cf.numeroCupon}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{cf.vr.toFixed(0)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{cf.renta > 0 ? cf.renta.toFixed(4) : "—"}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{cf.amortizacion > 0 ? cf.amortizacion.toFixed(4) : "—"}</td>
+                          <td className="px-4 py-2 text-right tabular-nums font-medium">{cf.amasR.toFixed(4)}</td>
+                        </tr>
+                      );
+                    })}
+                    {/* Totals */}
+                    {(() => {
+                      const future = maeDetalle.filter(cf => new Date(cf.fechaPago) > maeToday);
+                      return (
+                        <tr className="bg-slate-50 dark:bg-slate-800/40 font-semibold text-slate-900 dark:text-slate-100 text-xs">
+                          <td className="px-4 py-2 text-slate-500 font-normal" colSpan={3}>Total remanente</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{future.reduce((s,c)=>s+c.renta,0).toFixed(2)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{future.reduce((s,c)=>s+c.amortizacion,0).toFixed(2)}</td>
+                          <td className="px-4 py-2 text-right tabular-nums">{future.reduce((s,c)=>s+c.amasR,0).toFixed(2)}</td>
+                        </tr>
+                      );
+                    })()}
+                  </tbody>
+                </table>
+                {maeFlow?.numeroCuponActual && (
+                  <p className="text-[10px] text-slate-400 px-4 py-2 border-t border-slate-100 dark:border-slate-800">
+                    Cupón actual: {maeFlow.numeroCuponActual} · Fuente: MAE marketdata (api.marketdata.mae.com.ar)
+                  </p>
+                )}
+              </div>
+            ) : cashFlows.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
@@ -1319,41 +1428,27 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                             <span className="ml-2 text-[9px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 px-1.5 py-0.5 rounded">final</span>
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {cf.cupon > 0 ? cf.cupon.toFixed(4) : "—"}
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {cf.amortizacion > 0 ? cf.amortizacion.toFixed(2) : "—"}
-                        </td>
-                        <td className="px-4 py-2 text-right tabular-nums font-medium">
-                          {cf.total.toFixed(4)}
-                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">{cf.cupon > 0 ? cf.cupon.toFixed(4) : "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{cf.amortizacion > 0 ? cf.amortizacion.toFixed(2) : "—"}</td>
+                        <td className="px-4 py-2 text-right tabular-nums font-medium">{cf.total.toFixed(4)}</td>
                       </tr>
                     ))}
-                    {/* Total row */}
                     <tr className="bg-slate-50 dark:bg-slate-800/40 font-semibold text-slate-900 dark:text-slate-100">
                       <td className="px-4 py-2 text-xs text-slate-500 font-normal">Total recibido</td>
-                      <td className="px-3 py-2 text-right tabular-nums text-xs">
-                        {cashFlows.reduce((s, c) => s + c.cupon, 0).toFixed(2)}
-                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-xs">{cashFlows.reduce((s, c) => s + c.cupon, 0).toFixed(2)}</td>
                       <td className="px-3 py-2 text-right tabular-nums text-xs">100.00</td>
-                      <td className="px-4 py-2 text-right tabular-nums">
-                        {cashFlows.reduce((s, c) => s + c.total, 0).toFixed(2)}
-                      </td>
+                      <td className="px-4 py-2 text-right tabular-nums">{cashFlows.reduce((s, c) => s + c.total, 0).toFixed(2)}</td>
                     </tr>
                   </tbody>
                 </table>
                 <p className="text-[10px] text-slate-400 px-4 py-2 border-t border-slate-100 dark:border-slate-800">
-                  * Fechas estimadas según días al vencimiento. La frecuencia y el monto exacto de cada pago
-                  pueden diferir según el prospecto de la ON.
-                  {tirMethod === "computed" && " Cupón extraído de la descripción del instrumento."}
+                  * Fechas estimadas según días al vencimiento. La frecuencia y el monto exacto de cada pago pueden diferir según el prospecto.
                 </p>
               </div>
             ) : (
               <div className="px-4 py-5">
                 {q.maturityDate ? (
                   <div className="space-y-3">
-                    {/* Only maturity date known */}
                     <div className="flex justify-between text-xs border-b border-dashed border-slate-200 dark:border-slate-700 pb-3">
                       <span className="text-slate-500">Vencimiento / Amort. final</span>
                       <div className="text-right">
@@ -1362,12 +1457,12 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                       </div>
                     </div>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      El calendario de cupones y amortizaciones no está disponible en la API gratuita de BYMA.
-                      Consultá el prospecto en <span className="font-medium text-blue-500">cnv.gob.ar</span> o en la hoja técnica del bono en BYMA.
+                      Cargando flujo desde MAE marketdata… si no está disponible, consultá el prospecto en{" "}
+                      <span className="font-medium text-blue-500">cnv.gob.ar</span>.
                     </p>
                   </div>
                 ) : (
-                  <p className="text-sm text-slate-400">Flujos no disponibles — fecha de vencimiento desconocida.</p>
+                  <p className="text-sm text-slate-400">Flujos no disponibles.</p>
                 )}
               </div>
             )}
@@ -1695,12 +1790,12 @@ export function MercadoClient() {
             const vb = b.volumeAmount ?? b.volume ?? 0;
             return vb - va;
           });
-        // Prefer USD ONs (most traded) — filter to EXT currency first
-        const usdOns = sorted.filter(q => q.currency === "USD").slice(0, 8);
-        const arsOns = sorted.filter(q => q.currency === "ARS").slice(0, 8);
-        const display = usdOns.length >= 4
-          ? [...usdOns.slice(0, 8), ...arsOns.slice(0, 8)]
-          : sorted.slice(0, 16);
+        // Top 5 USD + top 5 ARS = 10 total, sorted by volume
+        const usdOns = sorted.filter(q => q.currency === "USD").slice(0, 5);
+        const arsOns = sorted.filter(q => q.currency === "ARS").slice(0, 5);
+        const display = usdOns.length >= 2
+          ? [...usdOns, ...arsOns]
+          : sorted.slice(0, 10);
 
         return (
           <BlockSection title="Obligaciones Negociables" icon="🏢" color="blue">
