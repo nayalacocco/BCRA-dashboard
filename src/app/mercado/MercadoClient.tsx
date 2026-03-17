@@ -1094,17 +1094,25 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
   const prospectusDetalle: ProspectusFlowCupon[] = prospectusFlowSpec?.detalle ?? [];
 
   // --- Determine which flow source to display, and comparison result ---
-  // Priority: MAE (live, authoritative) > Prospectus (hardcoded, verified)
-  const maeDetaille_raw = maeFlow?.detalle ?? [];
-  const maeDetalle = maeDetaille_raw;
-  const activeDetalle: ProspectusFlowCupon[] = maeDetalle.length > 0 ? maeDetalle : prospectusDetalle;
+  const maeDetalle = maeFlow?.detalle ?? [];
 
-  // Compare if both are available
+  // Compare when both are available
   const flowCompare = maeDetalle.length > 0 && prospectusDetalle.length > 0
     ? compareFlows(prospectusDetalle, maeDetalle)
     : maeDetalle.length > 0 ? "mae-only"
     : prospectusDetalle.length > 0 ? "prospectus-only"
     : null;
+
+  // Display priority:
+  //   match  → prospectus (has full history including paid coupons, MAE only shows future)
+  //   diff   → MAE (more authoritative for live data)
+  //   only-X → whichever is available
+  const activeDetalle: ProspectusFlowCupon[] =
+    flowCompare === "match"            ? prospectusDetalle
+    : flowCompare === "diff"           ? maeDetalle
+    : flowCompare === "prospectus-only"? prospectusDetalle
+    : maeDetalle.length > 0            ? maeDetalle
+    : prospectusDetalle;
 
   const maePrice   = q.lastPrice ?? 0;
   // TIR is only meaningful when price and cash-flow currencies match.
@@ -1443,15 +1451,15 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums text-slate-500">{cf.numeroCupon}</td>
                           <td className="px-3 py-2 text-right tabular-nums">{cf.vr.toFixed(0)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{cf.renta > 0 ? cf.renta.toFixed(4) : "—"}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{cf.amortizacion > 0 ? cf.amortizacion.toFixed(4) : "—"}</td>
-                          <td className="px-4 py-2 text-right tabular-nums font-medium">{cf.amasR.toFixed(4)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{cf.renta > 0 ? cf.renta.toFixed(2) : "—"}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{cf.amortizacion > 0 ? cf.amortizacion.toFixed(2) : "—"}</td>
+                          <td className="px-4 py-2 text-right tabular-nums font-medium">{cf.amasR.toFixed(2)}</td>
                         </tr>
                       );
                     })}
-                    {/* Totals */}
+                    {/* Totals row — use activeDetalle for consistency */}
                     {(() => {
-                      const future = maeDetalle.filter(cf => new Date(cf.fechaPago) > maeToday);
+                      const future = activeDetalle.filter(cf => new Date(cf.fechaPago) > maeToday);
                       return (
                         <tr className="bg-slate-50 dark:bg-slate-800/40 font-semibold text-slate-900 dark:text-slate-100 text-xs">
                           <td className="px-4 py-2 text-slate-500 font-normal" colSpan={3}>Total remanente</td>
