@@ -878,12 +878,10 @@ function MAEPendingNotice() {
 // ---- BYMA bond card ----
 
 function BondCard({
-  q, onClick, arsSecondaryPrice, totalArsVol,
+  q, onClick, totalArsVol,
 }: {
   q: BymaQuote;
   onClick?: () => void;
-  /** ARS-settlement price to show as secondary (smaller) below the USD price */
-  arsSecondaryPrice?: number | null;
   /** Combined ARS-equivalent volume across all variants of this bond */
   totalArsVol?: number | null;
 }) {
@@ -935,14 +933,7 @@ function BondCard({
         </p>
       </div>
 
-      {/* Secondary ARS price */}
-      {arsSecondaryPrice != null && arsSecondaryPrice > 0 && (
-        <p className="text-[10px] text-slate-500 tabular-nums mt-0.5">
-          ~ARS {arsSecondaryPrice.toLocaleString("es-AR", { maximumFractionDigits: 0 })}
-        </p>
-      )}
-
-      <div className="flex items-center gap-2 mt-1.5 text-xs text-slate-500">
+      <div className="flex items-center gap-2 mt-2 text-xs text-slate-500">
         {q.maturityDate && (
           <span>{q.maturityDate.slice(0, 7)}</span>
         )}
@@ -1880,19 +1871,18 @@ export function MercadoClient() {
           totalArsVol: number;
         }>();
 
-        // Standard settlement suffixes in BYMA for ONs:
-        //   D = MEP (dólar MEP / liquidación local)
-        //   C = cable (CCL / exterior)
-        //   O = pesos (liquidación en ARS)
-        // Non-standard suffixes (Y=yen, Z, X, etc.) are exotic denominations —
-        // excluded from the top-10 display as they confuse ranking.
-        const STANDARD_SUFFIXES = new Set(["D", "C", "O"]);
+        // BYMA ON ticker suffixes:
+        //   D = MEP (dólar MEP)  C = cable (CCL)  O = pesos (ARS)
+        //   Y = Yen/Yuan  Z/X/other = otras denominaciones exóticas → excluir
+        // Para el top-10 solo mostramos ONs que pagan en USD (currency==="USD").
+        // El campo q.currency viene de denominationCcy: "EXT"→"USD", "ARS"→"ARS".
+        const EXOTIC_SUFFIXES = new Set(["Y", "Z"]);
 
         for (const q of byma.negotiableObligations) {
           const suffix = q.symbol.slice(-1).toUpperCase();
 
-          // Skip exotic-denomination instruments (Yen, Yuan, etc.)
-          if (!STANDARD_SUFFIXES.has(suffix) && q.currency !== "ARS" && q.currency !== "USD") continue;
+          // Excluir explícitamente denominaciones exóticas (Yen, Yuan, etc.)
+          if (EXOTIC_SUFFIXES.has(suffix)) continue;
 
           const base = q.symbol.slice(0, -1);
           if (!groupMap.has(base)) {
@@ -1900,19 +1890,19 @@ export function MercadoClient() {
           }
           const grp = groupMap.get(base)!;
 
-          // volumeAmount is already in ARS for all BYMA instruments — sum directly
+          // volumeAmount es siempre en ARS en BYMA (ya convertido) — sumar directo
           const vol = q.volumeAmount ?? 0;
           grp.totalArsVol += vol;
 
-          const isUsdSettled = suffix === "D" || suffix === "C" || q.currency === "USD";
-          const isArsSettled = suffix === "O" || q.currency === "ARS";
+          // USD: el bono debe estar denominado en USD (currency==="USD" de BYMA)
+          const isUsdSettled = q.currency === "USD";
+          const isArsSettled = q.currency === "ARS";
 
           if (isUsdSettled) {
-            // Only accept as primary USD quote if it has a valid price
-            // (D suffix always beats C; among same suffix, higher volume wins)
+            // Preferencia: D sobre C; entre mismo sufijo, mayor volumen gana
             const curSuffix = grp.usdQuote?.symbol.slice(-1).toUpperCase() ?? "";
-            const curVol = grp.usdQuote?.volumeAmount ?? 0;
-            const hasPrice = (q.lastPrice ?? 0) > 0;
+            const curVol    = grp.usdQuote?.volumeAmount ?? 0;
+            const hasPrice  = (q.lastPrice ?? 0) > 0;
             const preferNew =
               hasPrice && (
                 !grp.usdQuote ||
@@ -1923,13 +1913,13 @@ export function MercadoClient() {
           } else if (isArsSettled) {
             const curVol = grp.arsQuote?.volumeAmount ?? 0;
             if (!grp.arsQuote || vol > curVol) grp.arsQuote = q;
-          } else {
-            // Non-standard but currency-identified: add volume, skip as display quote
           }
+          // currency null u otro: cuenta para volumen pero no como quote de display
         }
 
-        // Sort groups by combined ARS volume descending, take top 10
+        // Solo ONs que pagan en USD (tienen usdQuote). Ordenar por volumen → top 10.
         const top10 = [...groupMap.entries()]
+          .filter(([, grp]) => grp.usdQuote !== null)
           .sort(([, a], [, b]) => b.totalArsVol - a.totalArsVol)
           .slice(0, 10);
 
@@ -1944,15 +1934,11 @@ export function MercadoClient() {
                 // Primary card: always USD quote (preferred for TIR), fallback to ARS
                 const primaryQuote = grp.usdQuote ?? grp.arsQuote;
                 if (!primaryQuote) return null;
-                const arsSecondaryPrice = grp.usdQuote && grp.arsQuote
-                  ? grp.arsQuote.lastPrice
-                  : null;
                 return (
                   <BondCard
                     key={base}
                     q={primaryQuote}
                     onClick={() => setSelectedON(primaryQuote)}
-                    arsSecondaryPrice={arsSecondaryPrice}
                     totalArsVol={grp.totalArsVol}
                   />
                 );
