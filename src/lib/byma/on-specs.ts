@@ -64,12 +64,14 @@ export const ON_SPECS: Record<string, ONSpec> = {
     currency:        "USD",
   },
   "YM39": {
+    // Clase XL / XXXIX Adicional — "39" refiere a Clase XXXIX, NO año 2039
     issuer:          "YPF S.A.",
-    couponRate:      null,
+    couponRate:      8.75,
     couponFrequency: 2,
-    maturityDate:    "2039-01-01", // ← verificar
+    maturityDate:    "2030-07-22",
     amortization:    "bullet",
     currency:        "USD",
+    series:          "Clase XL / XXXIX Adicional",
   },
   "YM40": {
     issuer:          "YPF S.A.",
@@ -192,12 +194,13 @@ export const ON_SPECS: Record<string, ONSpec> = {
 
   // ── Pluspetrol Capital Corp. / PLC (PLC prefix) ──────────────────────────
   "PLC5": {
-    issuer:          "Pluspetrol Capital Corp.",  // ← verificar emisor
-    couponRate:      null,
+    issuer:          "Pluspetrol S.A.",
+    couponRate:      8.125,
     couponFrequency: 2,
-    maturityDate:    null,
+    maturityDate:    "2031-05-18",
     amortization:    "bullet",
     currency:        "USD",
+    series:          "Clase 5 · Ley NY · USD 500 M",
   },
   "PLC4": {
     issuer:          "Pluspetrol Capital Corp.",
@@ -305,12 +308,12 @@ export const ON_SPECS: Record<string, ONSpec> = {
   // ── Telecom Argentina S.A. (TLC prefix) ──────────────────────────────────
   "TLCM": {
     issuer:          "Telecom Argentina S.A.",
-    couponRate:      null,
+    couponRate:      9.50,
     couponFrequency: 2,
-    maturityDate:    null,
+    maturityDate:    "2031-07-18",
     amortization:    "bullet",
     currency:        "USD",
-    series:          "Clase M",
+    series:          "Clase 21 (M) · Ley NY · USD 500 M",
   },
   "TLCP": {
     issuer:          "Telecom Argentina S.A.",
@@ -323,12 +326,12 @@ export const ON_SPECS: Record<string, ONSpec> = {
   },
   "TLCT": {
     issuer:          "Telecom Argentina S.A.",
-    couponRate:      null,           // ← completar
+    couponRate:      8.50,
     couponFrequency: 2,
-    maturityDate:    null,           // ← completar
+    maturityDate:    "2036-01-20",
     amortization:    "bullet",
     currency:        "USD",
-    series:          "Clase T",
+    series:          "Clase 27 (T) · Ley NY · USD 600 M",
   },
 
   // ── IRSA Propiedades Comerciales S.A. (IRC prefix) ───────────────────────
@@ -341,14 +344,66 @@ export const ON_SPECS: Record<string, ONSpec> = {
     currency:        "USD",
   },
 
-  // ── LOC6 (Loma Negra / Llobregat?) ───────────────────────────────────────
-  "LOC6": {
-    issuer:          "— completar emisor",  // ← verificar
-    couponRate:      null,
+  // ── Loma Negra C.I.A.S.A. — Clase 5 (LOC5) ──────────────────────────────
+  "LOC5": {
+    issuer:          "Loma Negra C.I.A.S.A.",
+    couponRate:      8.00,
     couponFrequency: 2,
-    maturityDate:    null,
+    maturityDate:    "2027-07-24",
     amortization:    "bullet",
     currency:        "USD",
+    series:          "Clase 5 · USD 112.9 M",
+  },
+
+  // ── Loma Negra C.I.A.S.A. — Clase 6 (LOC6) ──────────────────────────────
+  "LOC6": {
+    issuer:          "Loma Negra C.I.A.S.A.",
+    couponRate:      null,  // ← completar
+    couponFrequency: 2,
+    maturityDate:    null,  // ← completar
+    amortization:    "bullet",
+    currency:        "USD",
+  },
+
+  // ── YPF S.A. — ON Clase XLII (YM42) ──────────────────────────────────────
+  // Tasa: 7.00% · Short first (103d) + short last (90d) + 5 regulares
+  "YM42": {
+    issuer:          "YPF S.A.",
+    couponRate:      7.00,
+    couponFrequency: 2,
+    maturityDate:    "2029-03-02",
+    amortization:    "bullet",
+    currency:        "USD",
+    series:          "Clase XLII · USD 194.9 M",
+  },
+
+  // ── Petroquímica Comodoro Rivadavia S.A. — Clase O (PQCO) ────────────────
+  // Zero-coupon — retorno vía descuento al precio de compra. TIR implícita ~13%.
+  "PQCO": {
+    issuer:          "Petroquímica Comodoro Rivadavia S.A.",
+    couponRate:      0,
+    couponFrequency: null,
+    maturityDate:    "2027-09-22",
+    amortization:    "bullet",
+    currency:        "USD",
+    series:          "Clase O · Zero-coupon · ISIN ARPETQ5600N8",
+  },
+
+  // ── FCA Compañía Financiera S.A. — Clase XXII Serie I (FTN1) ─────────────
+  // UVA-indexed, trimestral, amortizable en 3 tramos (meses 18/21/24)
+  "FTN1": {
+    issuer:          "FCA Compañía Financiera S.A.",
+    couponRate:      8.99,
+    couponFrequency: 4,
+    maturityDate:    "2028-02-24",
+    amortization:    "amortizing",
+    currency:        "ARS",   // UVA → liquida en pesos
+    series:          "Clase XXII Serie I · UVA · ISIN AR0436510025",
+    amortizationSchedule: [
+      { date: "2027-08-24", pct: 33.3333 },
+      { date: "2027-11-24", pct: 33.3333 },
+      { date: "2028-02-24", pct: 33.3334 },
+    ],
   },
 };
 
