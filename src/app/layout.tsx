@@ -1,19 +1,19 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Navbar } from "@/components/layout/Navbar";
+import { Sidebar } from "@/components/layout/Sidebar";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 
 export const metadata: Metadata = {
   title: {
-    default: "BCRA Dashboard",
-    template: "%s | BCRA Dashboard",
+    default: "Argentina Dashboard",
+    template: "%s | Argentina Dashboard",
   },
   description:
-    "Dashboard de indicadores económicos del Banco Central de la República Argentina. Tipo de cambio, reservas, tasas de interés e inflación en tiempo real.",
-  keywords: ["BCRA", "Argentina", "dólar", "economía", "reservas", "tasa", "inflación"],
+    "Dashboard de indicadores económicos de Argentina. Tipo de cambio, reservas, tasas de interés, inflación, bonos y ONs en tiempo real.",
+  keywords: ["BCRA", "Argentina", "dólar", "economía", "reservas", "tasa", "inflación", "bonos", "ONs"],
   openGraph: {
-    title: "BCRA Dashboard",
-    description: "Indicadores del Banco Central de la República Argentina",
+    title: "Argentina Dashboard",
+    description: "Indicadores económicos de Argentina en tiempo real",
     type: "website",
   },
 };
@@ -41,7 +41,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
         <ThemeProvider>
-          <Navbar />
+          <Sidebar />
           <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
             {children}
           </main>

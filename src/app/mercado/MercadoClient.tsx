@@ -892,8 +892,8 @@ function BondCard({
   const pct    = q.changePercent;
 
   const fmtUSD = (p: number) => p.toLocaleString("es-AR", {
-    minimumFractionDigits: p >= 100 ? 0 : 2,
-    maximumFractionDigits: p >= 100 ? 0 : 2,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   });
 
   const priceStr = q.lastPrice != null ? fmtUSD(q.lastPrice) : "—";
@@ -908,7 +908,7 @@ function BondCard({
       className={`card card-dark p-4 text-left w-full ${onClick ? "hover:ring-2 hover:ring-blue-400/40 cursor-pointer transition-all" : ""}`}
       onClick={onClick}
     >
-      <div className="flex items-start justify-between mb-1.5 gap-1">
+      <div className="flex items-start justify-between mb-0.5 gap-1">
         <span className="text-xs font-bold text-slate-300 font-mono">{q.symbol}</span>
         <span className={`text-xs font-semibold shrink-0 tabular-nums ${
           pct == null  ? "text-slate-500"
@@ -919,6 +919,13 @@ function BondCard({
           {pct == null ? "—" : `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`}
         </span>
       </div>
+
+      {/* Company name */}
+      {q.issuer && (
+        <p className="text-[9px] text-slate-500 dark:text-slate-600 truncate leading-tight mb-1.5">
+          {q.issuer.length > 24 ? q.issuer.slice(0, 22) + "…" : q.issuer}
+        </p>
+      )}
 
       {/* Primary price — always USD */}
       <div className="flex items-baseline gap-1.5">
@@ -1103,16 +1110,10 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
     : prospectusDetalle.length > 0 ? "prospectus-only"
     : null;
 
-  // Display priority:
-  //   match  → prospectus (has full history including paid coupons, MAE only shows future)
-  //   diff   → MAE (more authoritative for live data)
-  //   only-X → whichever is available
+  // Display priority: prospectus ALWAYS predominates (full history + paid coupons).
+  // MAE is only used as fallback when no prospectus is available.
   const activeDetalle: ProspectusFlowCupon[] =
-    flowCompare === "match"            ? prospectusDetalle
-    : flowCompare === "diff"           ? maeDetalle
-    : flowCompare === "prospectus-only"? prospectusDetalle
-    : maeDetalle.length > 0            ? maeDetalle
-    : prospectusDetalle;
+    prospectusDetalle.length > 0 ? prospectusDetalle : maeDetalle;
 
   const maePrice   = q.lastPrice ?? 0;
   // TIR is only meaningful when price and cash-flow currencies match.
@@ -1402,17 +1403,19 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
             <div className="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Flujos de Caja <span className="text-slate-400 font-normal">(sobre 100 VN)</span></h3>
               <div className="flex items-center gap-1.5">
-                {/* Source badge */}
+                {/* Source badge — prospectus always primary */}
                 {activeDetalle.length > 0 && (
-                  flowCompare === "match" ? (
-                    <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded-full">MAE ✓ prospecto</span>
-                  ) : flowCompare === "diff" ? (
-                    <span className="text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full">⚠ difiere MAE/prospecto</span>
-                  ) : flowCompare === "mae-only" ? (
+                  prospectusDetalle.length > 0 ? (
+                    flowCompare === "match" ? (
+                      <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded-full">Prospecto ✓ MAE</span>
+                    ) : flowCompare === "diff" ? (
+                      <span className="text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full">Prospecto ⚠ MAE difiere</span>
+                    ) : (
+                      <span className="text-[10px] bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded-full">Prospecto</span>
+                    )
+                  ) : (
                     <span className="text-[10px] bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400 px-2 py-0.5 rounded-full">MAE marketdata</span>
-                  ) : flowCompare === "prospectus-only" ? (
-                    <span className="text-[10px] bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded-full">desde prospecto</span>
-                  ) : null
+                  )
                 )}
                 {activeDetalle.length === 0 && cashFlows.length > 0 && (
                   <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-500 px-2 py-0.5 rounded-full">
@@ -1473,10 +1476,16 @@ function ONDetailModal({ quote: q, onClose }: { quote: BymaQuote; onClose: () =>
                 </table>
                 <p className="text-[10px] text-slate-400 px-4 py-2 border-t border-slate-100 dark:border-slate-800">
                   {maeFlow?.numeroCuponActual && <>Cupón actual: {maeFlow.numeroCuponActual} · </>}
-                  {flowCompare === "match" && "Flujo verificado: MAE marketdata coincide con prospecto. "}
-                  {flowCompare === "diff" && <span className="text-amber-500">⚠ Flujo de MAE y prospecto difieren — se muestra MAE. </span>}
-                  {flowCompare === "prospectus-only" && <>Fuente: prospecto oficial · <a href={prospectusFlowSpec?.source} target="_blank" rel="noreferrer" className="underline">{prospectusFlowSpec?.source?.split("/").pop()}</a> · </>}
-                  {flowCompare === "mae-only" && "Fuente: MAE marketdata (api.marketdata.mae.com.ar) · "}
+                  {prospectusDetalle.length > 0
+                    ? <>
+                        Fuente: prospecto oficial
+                        {prospectusFlowSpec?.source && <> · <a href={prospectusFlowSpec.source} target="_blank" rel="noreferrer" className="underline">{prospectusFlowSpec.source.split("/").pop()}</a></>}
+                        {flowCompare === "match" && " · verificado contra MAE marketdata ✓"}
+                        {flowCompare === "diff" && <span className="text-amber-500"> · ⚠ MAE difiere (usar prospecto)</span>}
+                        {" · "}
+                      </>
+                    : "Fuente: MAE marketdata (api.marketdata.mae.com.ar) · "
+                  }
                   Sobre 100 VN (valor nominal).
                 </p>
               </div>
@@ -1948,6 +1957,14 @@ export function MercadoClient() {
                   />
                 );
               })}
+            </div>
+            <div className="mt-4 flex justify-end">
+              <a
+                href="/on-list"
+                className="text-xs text-blue-500 hover:text-blue-400 hover:underline transition-colors"
+              >
+                Ver todas las ONs disponibles →
+              </a>
             </div>
           </BlockSection>
         );
