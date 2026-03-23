@@ -10,7 +10,7 @@ export interface DxyPoint {
 export async function GET() {
   try {
     const res = await fetch(
-      "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=5y",
+      "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=max",
       {
         headers: {
           "Accept": "application/json",
