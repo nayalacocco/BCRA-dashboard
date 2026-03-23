@@ -10,6 +10,7 @@ const navLinks = [
   { href: "/sector-externo", label: "Sector Externo" },
   { href: "/inflacion",      label: "Inflación" },
   { href: "/mercado",        label: "Mercado" },
+  { href: "/mercado/fx",     label: "  ↳ FX — Series" },
   { href: "/historico",      label: "Histórico" },
   { href: "/series",         label: "Comparador" },
   { href: "/on-list",        label: "ONs — Lista completa" },

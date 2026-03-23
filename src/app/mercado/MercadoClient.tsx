@@ -10,6 +10,7 @@
  */
 
 import { useState, useMemo, useEffect, useCallback } from "react";
+import Link from "next/link";
 import {
   ResponsiveContainer,
   BarChart,
@@ -31,6 +32,8 @@ import {
 } from "@/components/dashboard/PeriodSelector";
 import { fetchDolarSnapshot, brecha } from "@/lib/dolar/client";
 import type { DolarSnapshot } from "@/lib/dolar/client";
+import type { AllFxHistorico } from "@/lib/dolar/argentinadatos";
+import { dailyChangePct } from "@/lib/dolar/argentinadatos";
 import type { BymaData, BymaQuote } from "@/lib/byma/client";
 import type { MercadoData as MAEData, MAEQuote } from "@/lib/mae/mercado";
 import { getONSpec } from "@/lib/byma/on-specs";
@@ -679,11 +682,11 @@ function fmtPeso(v: number | null) {
 function FxCard({
   label,
   rate,
-  brechaVsOficial,
+  dailyChange,
 }: {
   label: string;
   rate: { compra: number | null; venta: number | null; fechaActualizacion: string } | null;
-  brechaVsOficial?: number | null;
+  dailyChange?: number | null;
 }) {
   if (!rate) return <PendingCard label={label} description="Sin datos" source="dolarapi.com" />;
 
@@ -691,18 +694,21 @@ function FxCard({
     hour: "2-digit", minute: "2-digit",
   });
 
+  const isUp   = (dailyChange ?? 0) > 0;
+  const isDown = (dailyChange ?? 0) < 0;
+
   return (
     <div className="card card-dark p-4 flex flex-col gap-2">
-      {/* Header row: label + brecha badge */}
+      {/* Header row: label + daily change badge */}
       <div className="flex items-start justify-between gap-1">
         <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide leading-tight">{label}</p>
-        {brechaVsOficial != null && (
+        {dailyChange != null && (
           <span className={`text-xs font-bold px-1.5 py-0.5 rounded shrink-0 ${
-            brechaVsOficial > 20 ? "bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400"
-            : brechaVsOficial > 5  ? "bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400"
-            : "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
+            isUp   ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
+            : isDown ? "bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400"
+            : "bg-slate-100 dark:bg-slate-800 text-slate-500"
           }`}>
-            +{brechaVsOficial.toFixed(1)}%
+            {isUp ? "▲" : isDown ? "▼" : ""}{Math.abs(dailyChange).toFixed(2)}%
           </span>
         )}
       </div>
@@ -726,40 +732,36 @@ function FxCard({
   );
 }
 
-// ---- Brecha bar chart ----
+// ── Compact brecha row ─────────────────────────────────────────────────────
 
-function BrechaChart({ fx }: { fx: DolarSnapshot }) {
+function BrechaRow({ fx }: { fx: DolarSnapshot }) {
   const oficial = fx.oficial;
   const items = [
-    { label: "MEP",  brecha: brecha(fx.mep,       oficial), color: "#1c7ed6" },
-    { label: "CCL",  brecha: brecha(fx.ccl,        oficial), color: "#339af0" },
-    { label: "Blue", brecha: brecha(fx.blue,       oficial), color: "#74c0fc" },
-    { label: "Cripto", brecha: brecha(fx.cripto,   oficial), color: "#a5d8ff" },
-  ].filter((d) => d.brecha != null);
+    { label: "MEP",    val: brecha(fx.mep,    oficial) },
+    { label: "CCL",    val: brecha(fx.ccl,    oficial) },
+    { label: "Blue",   val: brecha(fx.blue,   oficial) },
+    { label: "Cripto", val: brecha(fx.cripto, oficial) },
+  ].filter((d): d is { label: string; val: number } => d.val != null);
 
   if (items.length === 0) return null;
 
   return (
-    <div className="card card-dark p-5 mt-5">
-      <h3 className="font-semibold text-slate-900 dark:text-slate-100 mb-4">Brecha vs Oficial</h3>
-      <ResponsiveContainer width="100%" height={160}>
-        <BarChart data={items} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.12)" />
-          <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#94a3b8" }} />
-          <YAxis
-            tickFormatter={(v) => `${v.toFixed(0)}%`}
-            tick={{ fontSize: 10, fill: "#94a3b8" }}
-            width={44}
-            domain={[0, "auto"]}
-          />
-          <Tooltip
-            formatter={(v: number) => [`${v.toFixed(1)}%`, "Brecha vs Oficial"]}
-            contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 6, fontSize: 12 }}
-          />
-          <ReferenceLine y={0} stroke="#475569" />
-          <Bar dataKey="brecha" fill="#1c7ed6" radius={[4, 4, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-3 mt-3 border-t border-slate-200/60 dark:border-slate-800/60">
+      <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+        Brecha vs oficial:
+      </span>
+      {items.map((d) => (
+        <span key={d.label} className="flex items-center gap-1 text-xs">
+          <span className="text-slate-400">{d.label}</span>
+          <span className={`font-bold ${
+            d.val > 20 ? "text-red-500 dark:text-red-400"
+            : d.val > 5  ? "text-amber-500 dark:text-amber-400"
+            : "text-emerald-500 dark:text-emerald-400"
+          }`}>
+            +{d.val.toFixed(1)}%
+          </span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -1571,6 +1573,7 @@ export function MercadoClient() {
   const [tasas, setTasas]         = useState<TasasData | null>(null);
   const [byma, setByma]           = useState<BymaData | null>(null);
   const [mae, setMae]             = useState<MAEData | null>(null);
+  const [fxHist, setFxHist]       = useState<AllFxHistorico | null>(null);
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState<string | null>(null);
   const [period, setPeriod]       = useState<Period>("6m");
@@ -1591,11 +1594,15 @@ export function MercadoClient() {
           return j.data;
         });
       }),
-    ]).then(([fxRes, tasasRes, bymaRes, maeRes]) => {
+      fetch("/api/fx/historico").then((r) => r.json()),
+    ]).then(([fxRes, tasasRes, bymaRes, maeRes, histRes]) => {
       if (fxRes.status   === "fulfilled") setFx(fxRes.value);
       if (tasasRes.status === "fulfilled") setTasas(tasasRes.value);
       if (bymaRes.status  === "fulfilled") setByma(bymaRes.value);
       if (maeRes.status   === "fulfilled") setMae(maeRes.value as MAEData);
+      if (histRes?.status === "fulfilled" && (histRes as PromiseFulfilledResult<{data: AllFxHistorico}>).value?.data) {
+        setFxHist((histRes as PromiseFulfilledResult<{data: AllFxHistorico}>).value.data);
+      }
       if (fxRes.status === "rejected" && tasasRes.status === "rejected" && bymaRes.status === "rejected") {
         setError("No se pudieron cargar datos de ninguna fuente.");
       }
@@ -1603,6 +1610,18 @@ export function MercadoClient() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const fxDailyChanges = useMemo(() => {
+    if (!fxHist) return null;
+    return {
+      oficial:   dailyChangePct(fxHist.oficial),
+      mayorista: dailyChangePct(fxHist.mayorista),
+      mep:       dailyChangePct(fxHist.mep),
+      ccl:       dailyChangePct(fxHist.ccl),
+      blue:      dailyChangePct(fxHist.blue),
+      cripto:    dailyChangePct(fxHist.cripto),
+    };
+  }, [fxHist]);
 
   if (loading) return <LoadingSkeleton />;
 
@@ -1655,40 +1674,32 @@ export function MercadoClient() {
           FX DE MERCADO
       ================================================================ */}
       <BlockSection title="FX de Mercado" icon="💵" color="blue">
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-          Tipos de cambio en tiempo real. Fuente: dolarapi.com
-        </p>
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Tipos de cambio en tiempo real. Fuente: dolarapi.com
+          </p>
+          <Link
+            href="/mercado/fx"
+            className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 shrink-0"
+          >
+            Ver series históricas →
+          </Link>
+        </div>
 
         {fx ? (
           <>
             {/* KPI grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
-              <FxCard label="Oficial" rate={fx.oficial} />
-              <FxCard label="Mayorista" rate={fx.mayorista} />
-              <FxCard
-                label="MEP (Bolsa)"
-                rate={fx.mep}
-                brechaVsOficial={brecha(fx.mep, oficial)}
-              />
-              <FxCard
-                label="CCL"
-                rate={fx.ccl}
-                brechaVsOficial={brecha(fx.ccl, oficial)}
-              />
-              <FxCard
-                label="Blue"
-                rate={fx.blue}
-                brechaVsOficial={brecha(fx.blue, oficial)}
-              />
-              <FxCard
-                label="Cripto"
-                rate={fx.cripto}
-                brechaVsOficial={brecha(fx.cripto, oficial)}
-              />
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              <FxCard label="Oficial"    rate={fx.oficial}   dailyChange={fxDailyChanges?.oficial} />
+              <FxCard label="Mayorista"  rate={fx.mayorista} dailyChange={fxDailyChanges?.mayorista} />
+              <FxCard label="MEP (Bolsa)" rate={fx.mep}      dailyChange={fxDailyChanges?.mep} />
+              <FxCard label="CCL"        rate={fx.ccl}       dailyChange={fxDailyChanges?.ccl} />
+              <FxCard label="Blue"       rate={fx.blue}      dailyChange={fxDailyChanges?.blue} />
+              <FxCard label="Cripto"     rate={fx.cripto}    dailyChange={fxDailyChanges?.cripto} />
             </div>
 
-            {/* Brecha chart */}
-            <BrechaChart fx={fx} />
+            {/* Compact brecha row */}
+            <BrechaRow fx={fx} />
           </>
         ) : (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
