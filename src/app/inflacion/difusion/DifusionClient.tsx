@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
-  BarChart,
   CartesianGrid,
   ComposedChart,
   Line,
@@ -49,10 +48,10 @@ export function rango(fechas: string[], period: Period): [number, number] {
   return [a, b];
 }
 
-const BUCKET_COLORS = [
-  "#2b8a7e", "#96d1c7", "#3b5bdb", "#5c7cfa", "#a5b4fc",
-  "#f3d9a4", "#e9b949", "#e08e2b", "#d9622b", "#c2255c", "#7a1f3d",
-];
+/** Tramos de π_i − π_t: los primeros N_DEBAJO no superan al nivel general; solo se grafican los de arriba. */
+const N_DEBAJO = 4;
+const BUCKET_COLORS: Record<number, string> = { 4: "#f3d9a4", 5: "#e9b949", 6: "#e08e2b", 7: "#c2255c" };
+const TRAMOS_ARRIBA = [4, 5, 6, 7];
 const K_COLORS: Record<K, string> = { "3": "#fab005", "6": "#f76707", "12": "#e03131" };
 const KS: K[] = ["3", "6", "12"];
 
@@ -218,7 +217,7 @@ export function DifusionClient({
   // Mes de referencia = último del período elegido
   const t = b;
   const mes = fmtMes(data.fechas[t]);
-  const menos2 = v.buckets.slice(0, 5).reduce((s, x) => s + (x[t] ?? 0), 0);
+  const masDe1pp = v.buckets.slice(N_DEBAJO + 2).reduce((s, x) => s + (x[t] ?? 0), 0);
   const [lo3, hi3] = v.VRbanda["3"];
   const [loK, hiK] = v.VRbanda[k];
   const codigo = v.regimen.codigo[t];
@@ -463,11 +462,11 @@ export function DifusionClient({
             hint="D_t = % de ítems con π_i,t > π_t (variación del ítem mayor que la del nivel general). Cerca de 50 %: distribución simétrica. Bajo: pocos ítems empujan el promedio."
           />
           <Stat
-            label="Suben menos de 2 % m/m"
-            value={fmt(menos2)}
-            sub={universo === "nacional27" && pond === "simple" && serie === "orig" ? "Comparable con Banco Galicia" : undefined}
-            color="#5c7cfa"
-            hint="Suma de los tramos < 0 % a 1,5–2 % de la distribución de variaciones mensuales."
+            label="Suben más de 1 pp sobre el general"
+            value={fmt(masDe1pp)}
+            sub={`De ${fmt(v.D[t])} % que supera al nivel general`}
+            color="#c2255c"
+            hint="% de la canasta con π_i,t − π_t > 1 pp: cuánto de la difusión corresponde a subas claramente por encima del promedio."
           />
           <Stat
             label="Rotación C(3)"
@@ -488,54 +487,42 @@ export function DifusionClient({
 
         <div className="space-y-5">
           <ChartCard
-            title="Distribución de las variaciones mensuales"
+            title="Ítems que suben más que el nivel general"
             badge={pond === "pond" ? "% de la canasta" : "% de los ítems"}
-            nota="Porcentaje de ítems según el tramo de su variación mensual (m/m). Tonos fríos: por debajo de 2 %."
+            formula="D_t = Σ ω_i · 1[π_i,t > π_t]"
+            nota={`Cada barra es la difusión D del mes, abierta según cuánto supera cada ítem al nivel general (puntos porcentuales de variación m/m). Línea: promedio de 3 meses. Franja gris: zona intermedia (${fmt(P.umbral_D_concentrada, 0)}–${fmt(P.umbral_D_generalizada, 0)} %); por debajo la suba es concentrada, por encima generalizada.`}
           >
-            <div className="flex flex-wrap gap-x-3 gap-y-1 mb-3">
-              {data.buckets_etiquetas.map((e, j) => (
-                <div key={e} className="flex items-center gap-1">
-                  <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ backgroundColor: BUCKET_COLORS[j] }} />
-                  <span className="text-[11px] text-slate-400">{e} %</span>
-                </div>
-              ))}
-            </div>
-            <ResponsiveContainer width="100%" height={320}>
-              <BarChart data={rows} margin={{ top: 4, right: 8, left: 0, bottom: 4 }} barCategoryGap={idx.length > 40 ? 0 : "12%"}>
+            <Leyenda
+              items={[
+                ...TRAMOS_ARRIBA.map((j) => ({ label: `${data.buckets_etiquetas[j]} pp`, color: BUCKET_COLORS[j] })),
+                { label: "Promedio 3 meses", color: "#f76707" },
+              ]}
+            />
+            <ResponsiveContainer width="100%" height={300}>
+              <ComposedChart data={rows} margin={{ top: 4, right: 8, left: 0, bottom: 4 }} barCategoryGap={idx.length > 40 ? 0 : "12%"}>
                 <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
                 <XAxis dataKey="fecha" tickFormatter={fmtMes} tick={axisTick} interval={tickInterval} />
-                <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tickFormatter={(x) => `${x}%`} tick={axisTick} width={40} allowDataOverflow />
+                <YAxis
+                  domain={[0, Math.max(60, dominio(["D", "D3"], 10)[1])]}
+                  tickFormatter={(x) => `${x}%`}
+                  tick={axisTick}
+                  width={40}
+                />
+                <ReferenceArea y1={P.umbral_D_concentrada} y2={P.umbral_D_generalizada} fill="#64748b" fillOpacity={0.14} />
+                <ReferenceLine y={50} stroke="#475569" strokeDasharray="4 3" />
                 <Tooltip
                   {...tooltipStyle}
                   labelFormatter={fmtMes}
-                  formatter={(val: number, key: string) => [`${fmt(val)} %`, `${data.buckets_etiquetas[parseInt(key.slice(1), 10)]} %`]}
-                  itemSorter={(it) => -parseInt(String(it.dataKey).slice(1), 10)}
+                  formatter={(val: number, key: string) =>
+                    key === "D3" ? [`${fmt(val)} %`, "Promedio 3 meses"] : [`${fmt(val)} %`, `${data.buckets_etiquetas[parseInt(key.slice(1), 10)]} pp`]
+                  }
+                  itemSorter={(it) => (it.dataKey === "D3" ? -99 : -parseInt(String(it.dataKey).slice(1), 10))}
                 />
-                {data.buckets_etiquetas.map((_, j) => (
+                {TRAMOS_ARRIBA.map((j) => (
                   <Bar key={j} dataKey={`b${j}`} stackId="b" fill={BUCKET_COLORS[j]} isAnimationActive={false} />
                 ))}
-              </BarChart>
-            </ResponsiveContainer>
-          </ChartCard>
-
-          <ChartCard
-            title="Difusión puntual"
-            badge="% por encima del nivel general"
-            formula="D_t = Σ ω_i · 1[π_i,t > π_t]"
-            nota={`Franja gris: zona intermedia (${fmt(P.umbral_D_concentrada, 0)}–${fmt(P.umbral_D_generalizada, 0)} %). Por debajo, la suba es concentrada; por encima, generalizada.`}
-          >
-            <Leyenda items={[{ label: "D mensual", color: "#fdba74" }, { label: "Promedio 3 meses", color: "#f76707" }]} />
-            <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={rows} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={GRID} />
-                <XAxis dataKey="fecha" tickFormatter={fmtMes} tick={axisTick} interval={tickInterval} />
-                <YAxis domain={dominio(["D", "D3"], 5)} tickFormatter={(x) => `${x}%`} tick={axisTick} width={40} />
-                <ReferenceArea y1={P.umbral_D_concentrada} y2={P.umbral_D_generalizada} fill="#64748b" fillOpacity={0.14} />
-                <ReferenceLine y={50} stroke="#475569" strokeDasharray="4 3" />
-                <Tooltip {...tooltipStyle} labelFormatter={fmtMes} formatter={(val: number, key: string) => [`${fmt(val)} %`, key === "D" ? "D mensual" : "Promedio 3 meses"]} />
-                <Line type="linear" dataKey="D" stroke="#fdba74" strokeWidth={1} dot={false} isAnimationActive={false} />
                 <Line type="linear" dataKey="D3" stroke="#f76707" strokeWidth={2.5} dot={false} isAnimationActive={false} connectNulls />
-              </LineChart>
+              </ComposedChart>
             </ResponsiveContainer>
           </ChartCard>
         </div>

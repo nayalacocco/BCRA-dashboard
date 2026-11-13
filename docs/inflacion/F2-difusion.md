@@ -25,7 +25,7 @@ Sea π_{i,t} la variación mensual del ítem i, π_t la del nivel general recomp
 | Métrica | Fórmula | Lectura |
 |---|---|---|
 | Difusión D_t | Σ ω_{i,t} · 1[r_{i,t} > 0] | % de la canasta que sube más que el promedio. ~50 % = distribución simétrica; bajo = pocos rubros traccionan |
-| Tramos | % de la canasta con π_{i,t} en <0, 0–0,5, …, 4–5, >5 | Réplica del gráfico de Galicia, ponderada |
+| Tramos | % de la canasta con π_{i,t} − π_t en < −2, −2 a −1, −1 a −0,5, −0,5 a 0, 0 a 0,5, 0,5 a 1, 1 a 2, > 2 pp | Los tramos positivos suman D: la página grafica solo esos, para ver cuánto supera cada ítem al promedio |
 | Rotación C_t(k) | Σ ω_i · 1[r_i > 0 en algún mes de la ventana k] | % de la canasta que lideró al menos una vez |
 | Referencia C\*_t(k) | 1 − Π_{s}(1 − D_s) | Lo que daría C(k) si liderar un mes fuera independiente de haber liderado otro. C < C\* ⇒ lideran los mismos |
 | Acumulada A_t(k) | Σ ω_{i,t−k} · 1[R_i(k) > 0], R = Σ r | % de la canasta que le ganó al promedio en la ventana. Pesos al inicio de la ventana (identidad de Laspeyres exacta) |
@@ -41,6 +41,10 @@ Ventanas k = 3, 6, 12.
 - **Serie**: original o desestacionalizada.
 
 Default: `todos.pond.orig`.
+
+### Tramos relativos, no absolutos
+
+La primera versión usaba tramos fijos de variación m/m (<0, 0–0,5, …, >5 %), como el gráfico de Galicia. Se descartó: un corte fijo (p. ej. 2 %) cambia de significado con el nivel de inflación (en dic-23 todo caía en "> 5 %") y no se puede leer a lo largo de la serie. Los tramos en pp respecto del nivel general son comparables en cualquier régimen y descomponen D.
 
 ### Banda de referencia del VR
 
@@ -87,24 +91,24 @@ Cualquier otra combinación: "sin señal clara". La tarjeta muestra además en c
 
 **Reconciliación**: sin cambios respecto de F1 (máx. 0,016 pp nacional).
 
-**Contraste con el gráfico de Galicia**: con `nacional27.simple.orig`, el universo y la ponderación del gráfico, oct-26 da 55,5 % de aperturas con suba menor a 2 % (el gráfico muestra ≈ 56 %). La versión ponderada con 218 ítems da 58,0 %.
+**Contraste con el gráfico de Galicia** (solo chequeo, en `sanity.py`; la página no usa tramos absolutos): con `nacional27.simple.orig`, el universo y la ponderación del gráfico, oct-26 da 55,5 % de aperturas con suba menor a 2 % (el gráfico muestra ≈ 56 %). La versión ponderada con 218 ítems da 58,0 %.
 
 ## Resultado oct-2026
 
-| Variante | D | D̄(3) | <2 % | C(3) | C\*(3) | VR(3) | VR(12) | Amplitud | Dinámica |
+| Variante | D | D̄(3) | > 1 pp | C(3) | C\*(3) | VR(3) | VR(12) | Amplitud | Dinámica |
 |---|---|---|---|---|---|---|---|---|---|
-| todos · pond. · orig. | 35,7 | 45,9 | 58,0 | 77,3 | 84,9 | 1,71 | 1,47 | generalizada | persistencia |
-| todos · simple · orig. | 32,1 | 44,0 | 61,5 | 79,8 | 83,3 | 1,66 | 1,14 | intermedia | persistencia |
-| publicados · pond. · orig. | 36,7 | 46,6 | 56,5 | 77,3 | 85,5 | 1,87 | 1,64 | generalizada | persistencia |
-| publicados · simple · orig. | 29,9 | 44,9 | 63,4 | 79,3 | 84,6 | 1,69 | 1,80 | intermedia | persistencia |
-| nacional27 · pond. · orig. | 28,5 | 45,6 | 59,6 | 71,0 | 85,9 | 2,20 | 1,88 | generalizada | persistencia |
-| nacional27 · simple · orig. | 33,3 | 50,6 | 55,5 | 77,8 | 89,8 | 1,94 | 1,83 | generalizada | persistencia |
-| todos · pond. · desest. | 31,3 | 44,1 | 51,2 | 74,4 | 83,3 | 1,93 | 2,04 | intermedia | persistencia |
-| todos · simple · desest. | 28,4 | 37,3 | 59,6 | 66,5 | 75,8 | 1,88 | 1,52 | concentrada | persistencia |
-| publicados · pond. · desest. | 31,0 | 44,1 | 50,2 | 75,6 | 83,4 | 1,94 | 2,20 | intermedia | persistencia |
-| publicados · simple · desest. | 28,0 | 38,0 | 58,5 | 67,1 | 76,8 | 1,89 | 2,36 | concentrada | persistencia |
-| nacional27 · pond. · desest. | 25,1 | 44,0 | 50,5 | 70,0 | 84,1 | 2,29 | 2,78 | intermedia | persistencia |
-| nacional27 · simple · desest. | 29,6 | 39,5 | 51,8 | 63,0 | 78,4 | 2,23 | 2,56 | concentrada | persistencia |
+| todos · pond. · orig. | 35,7 | 45,9 | 14,2 | 77,3 | 84,9 | 1,71 | 1,47 | generalizada | persistencia |
+| todos · simple · orig. | 32,1 | 44,0 | 11,5 | 79,8 | 83,3 | 1,66 | 1,14 | intermedia | persistencia |
+| publicados · pond. · orig. | 36,7 | 46,6 | 13,9 | 77,3 | 85,5 | 1,87 | 1,64 | generalizada | persistencia |
+| publicados · simple · orig. | 29,9 | 44,9 | 11,5 | 79,3 | 84,6 | 1,69 | 1,80 | intermedia | persistencia |
+| nacional27 · pond. · orig. | 28,5 | 45,6 | 12,7 | 71,0 | 85,9 | 2,20 | 1,88 | generalizada | persistencia |
+| nacional27 · simple · orig. | 33,3 | 50,6 | 14,8 | 77,8 | 89,8 | 1,94 | 1,83 | generalizada | persistencia |
+| todos · pond. · desest. | 31,3 | 44,1 | 14,2 | 74,4 | 83,3 | 1,93 | 2,04 | intermedia | persistencia |
+| todos · simple · desest. | 28,4 | 37,3 | 13,8 | 66,5 | 75,8 | 1,88 | 1,52 | concentrada | persistencia |
+| publicados · pond. · desest. | 31,0 | 44,1 | 12,7 | 75,6 | 83,4 | 1,94 | 2,20 | intermedia | persistencia |
+| publicados · simple · desest. | 28,0 | 38,0 | 14,0 | 67,1 | 76,8 | 1,89 | 2,36 | concentrada | persistencia |
+| nacional27 · pond. · desest. | 25,1 | 44,0 | 12,6 | 70,0 | 84,1 | 2,29 | 2,78 | intermedia | persistencia |
+| nacional27 · simple · desest. | 29,6 | 39,5 | 14,8 | 63,0 | 78,4 | 2,23 | 2,56 | concentrada | persistencia |
 
 Banda de VR(3) en la variante default: 0,70–1,33.
 

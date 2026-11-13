@@ -60,6 +60,7 @@ def test_todos_iguales_no_rompe():
     assert np.isnan(m["D"]).all()
     assert np.isnan(m["VR"][3]).all() and np.isnan(m["A"][12]).all() and np.isnan(m["rho"][1:]).all()
     assert np.allclose(m["buckets"].sum(axis=1), 100.0)
+    assert np.allclose(m["buckets"][:, dif.N_DEBAJO:].sum(axis=1), 0.0)  # nadie supera al promedio
     assert set(dif.regimen(m)["codigo"]) == {"intermedia"}
 
 
@@ -138,3 +139,11 @@ def test_normalizacion_estacional():
     s = np.tile(np.sin(2 * np.pi * np.arange(12) / 12), 5)
     assert np.allclose(normalizar_estacional(s), s, atol=1e-12)
     assert np.allclose(normalizar_estacional(s + 0.3), s, atol=1e-12)
+
+
+def test_tramos_sobre_el_promedio_suman_D():
+    rng = np.random.default_rng(7)
+    pi = 0.03 + rng.normal(0, 0.012, size=(30, 40))
+    m, _, _ = _run(pi)
+    assert np.allclose(m["buckets"].sum(axis=1), 100.0)
+    assert np.allclose(m["buckets"][:, dif.N_DEBAJO:].sum(axis=1), m["D"], atol=1e-6)

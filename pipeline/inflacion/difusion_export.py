@@ -149,12 +149,11 @@ def exportar(data_dir: Path) -> dict:
 def resumen(d: dict) -> str:
     v = d["variantes"]["todos.pond.orig"]
     s = d["variantes"]["todos.pond.sa"]
-    g = d["variantes"]["nacional27.simple.orig"]
     i = -1
     return (
         f"M2 {d['ultimo_periodo']} — D={v['D'][i]}% (desest. {s['D'][i]}%), C(3)={v['C']['3'][i]}% vs ref {v['Cref']['3'][i]}%, "
         f"VR(3)={v['VR']['3'][i]} banda {v['VRbanda']['3']}, VR(12)={v['VR']['12'][i]}, régimen={v['regimen']['codigo'][i]}; "
-        f"Galicia-comparable <2%: {sum(b[i] for b in g['buckets'][:5]):.1f}%; "
+        f"más de 1 pp sobre el general: {sum(b[i] for b in v['buckets'][-2:]):.1f}%; "
         f"desestacionalizados {d['parametros']['desest']['items_ajustados']}/{d['parametros']['desest']['items_total']}"
     )
 

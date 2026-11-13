@@ -12,7 +12,7 @@ para un índice de base fija.
 Métricas
 --------
 D_t        % (ponderado o no) de ítems con π_{i,t} > π_t.
-buckets    distribución de π_{i,t} en tramos fijos (<0, 0–0,5, …, >5 % m/m).
+buckets    distribución de π_{i,t} − π_t en tramos (pp respecto del nivel general). Los tramos > 0 suman D_t.
 C_t(k)     % de ítems que superaron al nivel general en al menos un mes de la ventana.
 C*_t(k)    referencia de independencia: 1 − Π_j (1 − D_{t−j}). C > C* ⇒ los ítems se turnan más que al azar.
 A_t(k)     % de ítems con acumulada Π_{i,t}(k) > Π_t(k).
@@ -31,8 +31,10 @@ import numpy as np
 import pandas as pd
 
 KS = (3, 6, 12)
-CORTES = [-np.inf, 0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, np.inf]
-ETIQUETAS = ["<0", "0–0,5", "0,5–1", "1–1,5", "1,5–2", "2–2,5", "2,5–3", "3–3,5", "3,5–4", "4–5", ">5"]
+# Tramos de π_i − π_t en puntos porcentuales. Intervalos (a, b]: un ítem igual al nivel general cae en "−0,5 a 0".
+CORTES = [-np.inf, -2, -1, -0.5, 0, 0.5, 1, 2, np.inf]
+ETIQUETAS = ["< −2", "−2 a −1", "−1 a −0,5", "−0,5 a 0", "0 a 0,5", "0,5 a 1", "1 a 2", "> 2"]
+N_DEBAJO = 4  # los primeros 4 tramos: el ítem no supera al nivel general
 EPS = 1e-9
 N_PERMUTACIONES = 300  # réplicas de inversión de signos para las bandas de VR
 SEMILLA = 20261113
@@ -134,7 +136,7 @@ def metricas(panel: pd.DataFrame, w_base: pd.Series | None, headline: pd.Series,
             pass
         else:
             D[t] = 100 * np.sum(w[sobre[t]])
-        cat = np.digitize(PI[t] * 100, CORTES[1:-1], right=False)
+        cat = np.digitize((PI[t] - PH[t] - EPS) * 100, CORTES[1:-1], right=True)
         buckets[t] = 100 * np.bincount(cat, weights=w, minlength=len(ETIQUETAS))
 
     out: dict = {"D": D, "buckets": buckets, "C": {}, "Cref": {}, "A": {}, "VR": {}}
