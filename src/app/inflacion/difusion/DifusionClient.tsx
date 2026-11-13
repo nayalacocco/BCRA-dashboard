@@ -156,6 +156,7 @@ export function DifusionClient({
   const [pond, setPond] = useState<PondKey>("pond");
   const [serie, setSerie] = useState<SerieKey>("orig");
   const [k, setK] = useState<K>("3");
+  const [urlLeida, setUrlLeida] = useState(false);
 
   // Estado inicial desde la URL (?periodo=max&universo=nacional27&pond=simple&serie=sa&k=12): vistas compartibles
   useEffect(() => {
@@ -169,7 +170,15 @@ export function DifusionClient({
     pick<PondKey>("pond", ["pond", "simple"], setPond);
     pick<SerieKey>("serie", ["orig", "sa"], setSerie);
     pick<K>("k", KS, setK);
+    setUrlLeida(true);
   }, []);
+
+  // …y cada cambio de selector vuelve a la URL (sin recargar ni sumar entradas al historial)
+  useEffect(() => {
+    if (!urlLeida) return;
+    const q = new URLSearchParams({ periodo: period, universo, pond, serie, k });
+    window.history.replaceState(null, "", `${window.location.pathname}?${q.toString()}`);
+  }, [urlLeida, period, universo, pond, serie, k]);
 
   const v: Variante = data.variantes[`${universo}.${pond}.${serie}`];
   const [a, b] = useMemo(() => rango(data.fechas, period), [data.fechas, period]);

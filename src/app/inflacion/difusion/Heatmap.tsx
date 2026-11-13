@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { HeatmapData, SerieKey } from "@/lib/inflacion/difusion-types";
 
 const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
@@ -25,7 +25,30 @@ export function Heatmap({ serie, a, b }: { serie: SerieKey; a: number; b: number
   const [grupo, setGrupo] = useState("Nacional");
   const [orden, setOrden] = useState<Orden>("division");
 
+  // Carga diferida: el JSON (~350 KB) se pide recién cuando el mapa se acerca a la pantalla
+  const ancla = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
   useEffect(() => {
+    const el = ancla.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    const obs = new IntersectionObserver(
+      (e) => {
+        if (e.some((x) => x.isIntersecting)) {
+          setVisible(true);
+          obs.disconnect();
+        }
+      },
+      { rootMargin: "300px" },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!visible) return;
     let vivo = true;
     fetch("/api/inflacion/heatmap")
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
@@ -34,7 +57,7 @@ export function Heatmap({ serie, a, b }: { serie: SerieKey; a: number; b: number
     return () => {
       vivo = false;
     };
-  }, []);
+  }, [visible]);
 
   const filas = useMemo(() => {
     if (!data) return [];
@@ -52,7 +75,7 @@ export function Heatmap({ serie, a, b }: { serie: SerieKey; a: number; b: number
   }, [data, grupo, serie, a, b, orden]);
 
   if (error) return <p className="text-sm text-slate-400">Sin dato: no se pudo cargar el mapa de precios relativos.</p>;
-  if (!data) return <div className="h-64 rounded-xl bg-slate-200 dark:bg-slate-800 animate-pulse" />;
+  if (!data) return <div ref={ancla} className="h-64 rounded-xl bg-slate-200 dark:bg-slate-800 animate-pulse" />;
 
   const fechas = data.fechas.slice(a, b + 1);
   const n = fechas.length;
