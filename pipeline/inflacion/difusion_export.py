@@ -3,6 +3,7 @@ Exporta M2 (difusión y rotación) a JSON para la web.
 
   difusion.json  métricas por variante = universo × ponderación × serie (12 variantes)
   heatmap.json   r_{i,t} por ítem (Nacional 27 aperturas y cada región), original y desestacionalizado
+  precios_relativos.json  nivel relativo vs. anclas, dirección 3/6/12 meses y backtest (desestacionalizado)
 
 Uso sin descargar nada (lee panel_indices.json e items.json ya generados):
   python -m inflacion.difusion_export --data ../data/inflacion
@@ -18,6 +19,8 @@ import numpy as np
 import pandas as pd
 
 from . import difusion as dif
+from . import nulo
+from . import precios_relativos as prel
 from .desest import P_ESTACIONAL, VENTANA_ESTACIONAL, desestacionalizar
 from .indec import REGIONES
 
@@ -80,7 +83,6 @@ def exportar(data_dir: Path) -> dict:
                 m = dif.metricas(pu, wb, headline[skey])
                 reg = dif.regimen(m)
                 fechas = m["fechas"]
-                lo, hi = m["VRbanda"][3]
                 variantes[f"{ukey}.{pkey}.{skey}"] = {
                     "D": _lista(m["D"], 1),
                     "buckets": [_lista(m["buckets"][:, j], 1) for j in range(len(dif.ETIQUETAS))],
@@ -88,7 +90,9 @@ def exportar(data_dir: Path) -> dict:
                     "Cref": {str(k): _lista(m["Cref"][k], 1) for k in dif.KS},
                     "A": {str(k): _lista(m["A"][k], 1) for k in dif.KS},
                     "VR": {str(k): _lista(m["VR"][k], 3) for k in dif.KS},
-                    "VRbanda": {str(k): [_r(a, 3), _r(b, 3)] for k, (a, b) in m["VRbanda"].items()},
+                    "Cnull": {str(k): [_lista(m["nulo"]["C"][k][j], 1) for j in range(3)] for k in dif.KS},
+                    "VRnull": {str(k): [_lista(m["nulo"]["VR"][k][j], 3) for j in range(3)] for k in dif.KS},
+                    "umbrales_D": [_r(reg["umbrales"][0], 1), _r(reg["umbrales"][1], 1)],
                     "rho": _lista(m["rho"], 3),
                     "rho6": _lista(m["rho6"], 3),
                     "rho12": _lista(m["rho12"], 3),
@@ -126,11 +130,10 @@ def exportar(data_dir: Path) -> dict:
         "amplitud_etiquetas": dif.AMPLITUD,
         "dinamica_etiquetas": dif.DINAMICA,
         "parametros": {
-            "umbral_D_concentrada": dif.UMBRAL_D_CONCENTRADA,
-            "umbral_D_generalizada": dif.UMBRAL_D_GENERALIZADA,
-            "replicas_banda_VR": dif.N_PERMUTACIONES,
-            "metodo_banda_VR": "inversión aleatoria de signos de r (elimina autocorrelación y deriva, conserva magnitudes)",
-            "banda_VR_percentiles": [5, 95],
+            "umbrales_amplitud": "terciles de la distribución histórica de D̄ (3 meses) de cada variante",
+            "replicas_null": nulo.N_REPLICAS,
+            "metodo_null": "permutación de los años dentro de cada mes calendario, ítem por ítem (conserva estacionalidad, deriva media y volatilidad de cada rubro; rompe la dependencia entre meses)",
+            "null_percentiles": list(nulo.PERCENTILES),
             "desest": {
                 "metodo": f"STL robusto sobre Δln del índice, período 12, ventana estacional {VENTANA_ESTACIONAL}; se ajusta solo si Kruskal–Wallis p < {P_ESTACIONAL}",
                 "items_ajustados": len(ajustados),
@@ -143,7 +146,61 @@ def exportar(data_dir: Path) -> dict:
     (data_dir / "difusion.json").write_text(json.dumps(difusion, ensure_ascii=False, separators=(",", ":")))
     (data_dir / "heatmap.json").write_text(json.dumps(heatmap, ensure_ascii=False, separators=(",", ":")))
     (data_dir / "desest.json").write_text(json.dumps(info_sa, ensure_ascii=False, separators=(",", ":")))
+    (data_dir / "precios_relativos.json").write_text(
+        json.dumps(exportar_precios_relativos(items, panel_sa, headline["sa"]), ensure_ascii=False, separators=(",", ":"))
+    )
     return difusion
+
+
+def exportar_precios_relativos(items: pd.DataFrame, panel_sa: pd.DataFrame, headline_sa: pd.Series) -> dict:
+    """Nivel relativo vs. anclas (series desestacionalizadas) para Nacional (27) y cada región."""
+    nac, w_nac, meta_nac = nacional27(items, panel_sa)
+    grupos: dict[str, dict] = {}
+    L_nac = prel.nivel_relativo(nac, headline_sa)
+    fechas = [f"{f:%Y-%m}" for f in L_nac.index]
+
+    nombres = {**dict(zip(meta_nac.id, meta_nac.descripcion)), **dict(zip(items.id, items.descripcion))}
+
+    def filas(L: pd.DataFrame) -> dict:
+        res = prel.resumen_items(L)
+        return {
+            c: {
+                "nombre": nombres.get(c, c),
+                "ancla": r.ancla,
+                "desvio_filtrada": _r(r.desvio_filtrada, 1),
+                "desvio_simple": _r(r.desvio_simple, 1),
+                **{f"d{k}": _r(getattr(r, f"d{k}"), 1) for k in prel.KS_DIR},
+            }
+            for c, r in res.iterrows()
+        }
+
+    af, _ = prel.anclas(L_nac)
+    grupos["Nacional"] = {
+        "items": filas(L_nac),
+        # índice del precio relativo con el ancla filtrada = 100 (para el gráfico de evolución)
+        "serie": {c: _lista(100 * np.exp(L_nac[c] - af[c]), 1) for c in L_nac.columns},
+        "peso": {c: _r(100 * w_nac[c] / w_nac.sum(), 2) for c in L_nac.columns},
+    }
+    for reg_name in REGIONES:
+        ids = list(items[items.region == reg_name].id)
+        grupos[reg_name] = {"items": filas(prel.nivel_relativo(panel_sa[ids], headline_sa))}
+
+    m = prel.meses_sin_cepo(L_nac.index)
+    return {
+        "schema_version": 1,
+        "fechas": fechas,
+        "serie": "desestacionalizada",
+        "ancla": {
+            "tipo": "historia_filtrada",
+            "regla": "promedio del nivel relativo en los meses sin cepo cambiario",
+            "periodos": [[a, b or fechas[-1]] for a, b in prel.SIN_CEPO],
+            "meses": int(m.sum()),
+            "meses_total": len(fechas),
+            "fuentes": "Fin del cepo: BCRA Com. A 6770 (1/9/2019); fin del cepo para personas humanas 14/4/2025",
+        },
+        "backtest": prel.backtest(L_nac),
+        "grupos": grupos,
+    }
 
 
 def resumen(d: dict) -> str:
@@ -151,8 +208,9 @@ def resumen(d: dict) -> str:
     s = d["variantes"]["todos.pond.sa"]
     i = -1
     return (
-        f"M2 {d['ultimo_periodo']} — D={v['D'][i]}% (desest. {s['D'][i]}%), C(3)={v['C']['3'][i]}% vs ref {v['Cref']['3'][i]}%, "
-        f"VR(3)={v['VR']['3'][i]} banda {v['VRbanda']['3']}, VR(12)={v['VR']['12'][i]}, régimen={v['regimen']['codigo'][i]}; "
+        f"M2 {d['ultimo_periodo']} — D={v['D'][i]}% (desest. {s['D'][i]}%), C(3)={v['C']['3'][i]}% vs null p50 {v['Cnull']['3'][1][i]}% "
+        f"[{v['Cnull']['3'][0][i]}–{v['Cnull']['3'][2][i]}], VR(3)={v['VR']['3'][i]} null [{v['VRnull']['3'][0][i]}–{v['VRnull']['3'][2][i]}], "
+        f"VR(12)={v['VR']['12'][i]}, umbrales D {v['umbrales_D']}, régimen={v['regimen']['codigo'][i]}; "
         f"más de 1 pp sobre el general: {sum(b[i] for b in v['buckets'][-2:]):.1f}%; "
         f"desestacionalizados {d['parametros']['desest']['items_ajustados']}/{d['parametros']['desest']['items_total']}"
     )

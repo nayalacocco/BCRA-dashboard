@@ -14,7 +14,9 @@ Métricas
 D_t        % (ponderado o no) de ítems con π_{i,t} > π_t.
 buckets    distribución de π_{i,t} − π_t en tramos (pp respecto del nivel general). Los tramos > 0 suman D_t.
 C_t(k)     % de ítems que superaron al nivel general en al menos un mes de la ventana.
-C*_t(k)    referencia de independencia: 1 − Π_j (1 − D_{t−j}). C > C* ⇒ los ítems se turnan más que al azar.
+C*_t(k)    aproximación descartada: 1 − Π_j (1 − D_{t−j}) (supone ítems homogéneos; sobreestima la cobertura al
+           azar). Se exporta solo para documentarla. La referencia es el null por permutación (`nulo.py`).
+nulo       percentiles 5/50/95 de C_t(k) y VR_t(k) permutando años dentro de cada mes calendario, ítem por ítem.
 A_t(k)     % de ítems con acumulada Π_{i,t}(k) > Π_t(k).
 VR_t(k)    Var_cs(Σ_j r_{i,t−j}) / (k · media_j Var_cs(r_{i,t−j})).
            Identidad: VR − 1 = 2·Σ_{j<l} Cov_cs(r_j, r_l) / Σ_j Var_cs(r_j), es decir, la autocovarianza
@@ -29,6 +31,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
+from . import nulo as _nulo
 
 KS = (3, 6, 12)
 # Tramos de π_i − π_t en puntos porcentuales. Intervalos (a, b]: un ítem igual al nivel general cae en "−0,5 a 0".
@@ -112,7 +116,7 @@ def bandas_vr(R: np.ndarray, w: np.ndarray, ks=KS, n=N_PERMUTACIONES, semilla=SE
     return out
 
 
-def metricas(panel: pd.DataFrame, w_base: pd.Series | None, headline: pd.Series, ks=KS) -> dict:
+def metricas(panel: pd.DataFrame, w_base: pd.Series | None, headline: pd.Series, ks=KS, replicas: int | None = None) -> dict:
     """
     panel: índices de los ítems del universo. w_base: ponderadores de base (None = sin ponderar).
     headline: índice del nivel general de la canasta completa (misma variante: original o desest.).
@@ -169,7 +173,9 @@ def metricas(panel: pd.DataFrame, w_base: pd.Series | None, headline: pd.Series,
     out["rho12"] = s.rolling(12, min_periods=12).mean().values
 
     w_medio = np.nanmean(Wm, axis=0)
-    out["VRbanda"] = bandas_vr(R, w_medio, ks)
+    out["VRbanda"] = bandas_vr(R, w_medio, ks, n=50)  # null anterior (inversión de signos); solo referencia
+    meses = np.asarray(idx.month) - 1 if hasattr(idx, "month") else np.arange(T) % 12
+    out["nulo"] = _nulo.null_permutacion(R, Wm, meses, ks, n=replicas or _nulo.N_REPLICAS)
     out["R"] = pd.DataFrame(R, index=idx, columns=panel.columns)
     out["fechas"] = idx
     return out
@@ -179,8 +185,19 @@ def metricas(panel: pd.DataFrame, w_base: pd.Series | None, headline: pd.Series,
 # Régimen: reglas explícitas sobre D (amplitud), VR(3) y C(3) (rotación)
 # ---------------------------------------------------------------------------
 
-UMBRAL_D_CONCENTRADA = 40.0   # D̄ < 40 %: pocos ítems por encima del promedio → suba concentrada
-UMBRAL_D_GENERALIZADA = 45.0  # D̄ ≥ 45 %: distribución cercana a simétrica → suba generalizada
+# Amplitud: terciles de la distribución histórica de D̄ (3 meses) de cada variante. D cae estructuralmente
+# bajo 50 % porque la distribución de variaciones es asimétrica a la derecha (pocos rubros con subas grandes
+# tiran el promedio para arriba), así que un umbral fijo en torno a 50 % no es neutro.
+TERCILES = (100 / 3, 200 / 3)
+
+
+def umbrales_amplitud(d3: np.ndarray) -> tuple[float, float]:
+    x = np.asarray(d3, dtype=float)
+    x = x[np.isfinite(x)]
+    if x.size < 12:
+        return (np.nan, np.nan)
+    lo, hi = np.percentile(x, TERCILES)
+    return (float(lo), float(hi))
 
 REGIMENES = {
     "generalizada_escalonada": {
@@ -207,37 +224,35 @@ REGIMENES = {
 
 
 AMPLITUD = {
-    "concentrada": "Concentrada: pocos rubros por encima del promedio",
-    "intermedia": "Intermedia",
-    "generalizada": "Generalizada: cerca de la mitad de la canasta por encima del promedio",
+    "concentrada": "Concentrada: difusión en el tercio inferior de su historia",
+    "intermedia": "Intermedia: difusión en el tercio central de su historia",
+    "generalizada": "Generalizada: difusión en el tercio superior de su historia",
 }
 DINAMICA = {
-    "rotacion": "Rotación: los precios relativos revierten (los rubros se turnan)",
-    "ruido": "Sin patrón distinguible del ruido",
-    "persistencia": "Persistencia: los mismos rubros siguen liderando",
+    "rotacion": "Rotación: los rubros se turnan más de lo que daría el azar",
+    "ruido": "Sin patrón distinguible del azar",
+    "persistencia": "Persistencia: los mismos rubros siguen liderando más de lo que daría el azar",
 }
 
 
-def componentes(d3: float, vr3: float, exceso_c3: float, banda: tuple[float, float]) -> tuple[str | None, str | None]:
+def componentes(
+    d3: float, vr3: float, c3: float, umbrales: tuple[float, float], vr_null: tuple[float, float], c_null: tuple[float, float]
+) -> tuple[str | None, str | None]:
     """
-    Amplitud (sobre D̄, promedio de 3 meses de D_t):
-        concentrada  ⇔ D̄ < 40 %      generalizada ⇔ D̄ ≥ 45 %      intermedia en el medio
-    Dinámica (sobre VR(3), su banda de referencia [p5, p95] y el exceso de rotación C(3) − C*(3)):
-        rotación     ⇔ VR(3) < p5   o  (VR(3) < 1 y C(3) > C*(3))
-        persistencia ⇔ VR(3) > p95  o  (VR(3) > 1 y C(3) < C*(3))
-        ruido en otro caso
-    (VR manda cuando sale de la banda; adentro de la banda se exige que C(3) confirme el signo.)
+    Amplitud (sobre D̄, promedio de 3 meses de D, contra los terciles históricos de la variante):
+        concentrada ⇔ D̄ < p33      generalizada ⇔ D̄ ≥ p67      intermedia en el medio
+    Dinámica (contra el null por permutación del mes; vr_null y c_null = (p5, p95)):
+        persistencia ⇔ VR(3) > p95 o C(3) < p5    (los mismos rubros, más de lo que daría el azar)
+        rotación     ⇔ VR(3) < p5  o C(3) > p95   (se turnan más de lo que daría el azar)
+        ruido        si no sale de ninguna banda, o si las dos señales se contradicen
     """
-    if any(np.isnan(x) for x in (d3, vr3, exceso_c3, *banda)):
+    if any(np.isnan(x) for x in (d3, vr3, c3, *umbrales, *vr_null, *c_null)):
         return None, None
-    amp = "generalizada" if d3 >= UMBRAL_D_GENERALIZADA else "concentrada" if d3 < UMBRAL_D_CONCENTRADA else "intermedia"
-    lo, hi = banda
-    if vr3 < lo or (vr3 < 1 and exceso_c3 > 0):
-        din = "rotacion"
-    elif vr3 > hi or (vr3 > 1 and exceso_c3 < 0):
-        din = "persistencia"
-    else:
-        din = "ruido"
+    lo, hi = umbrales
+    amp = "generalizada" if d3 >= hi else "concentrada" if d3 < lo else "intermedia"
+    pers = vr3 > vr_null[1] or c3 < c_null[0]
+    rot = vr3 < vr_null[0] or c3 > c_null[1]
+    din = "persistencia" if pers and not rot else "rotacion" if rot and not pers else "ruido"
     return amp, din
 
 
@@ -249,19 +264,24 @@ _TABLA = {
 }
 
 
-def clasificar(d3: float, vr3: float, exceso_c3: float, banda: tuple[float, float]) -> str:
+def clasificar(d3, vr3, c3, umbrales, vr_null, c_null) -> str:
     """Régimen = combinación de amplitud y dinámica (ver `componentes`); el resto es "intermedia"."""
-    return _TABLA.get(componentes(d3, vr3, exceso_c3, banda), "intermedia")
+    return _TABLA.get(componentes(d3, vr3, c3, umbrales, vr_null, c_null), "intermedia")
 
 
 def regimen(m: dict) -> dict:
     D = pd.Series(m["D"])
     d3 = D.rolling(3, min_periods=3).mean().values
-    exc = m["C"][3] - m["Cref"][3]
-    comp = [componentes(d3[t], m["VR"][3][t], exc[t], m["VRbanda"][3]) for t in range(len(D))]
+    umb = umbrales_amplitud(d3)
+    nv, nc = m["nulo"]["VR"][3], m["nulo"]["C"][3]
+    comp = [
+        componentes(d3[t], m["VR"][3][t], m["C"][3][t], umb, (nv[0][t], nv[2][t]), (nc[0][t], nc[2][t]))
+        for t in range(len(D))
+    ]
     return {
         "D3": d3,
-        "excesoC3": exc,
+        "excesoC3": m["C"][3] - nc[1],
+        "umbrales": umb,
         "amplitud": [c[0] for c in comp],
         "dinamica": [c[1] for c in comp],
         "codigo": [_TABLA.get(c, "intermedia") for c in comp],
