@@ -101,6 +101,34 @@ def reconciliacion(items: list[Item], panel: pd.DataFrame, divisiones: pd.DataFr
     return Check("reconciliacion_headline", ok, True, det, resumen), rec
 
 
+def check_divisiones_cubiertas(items: list[Item], panel: pd.DataFrame, divisiones: pd.DataFrame) -> Check:
+    """
+    Prueba independiente de las aperturas: en divisiones sin ítem residual (las aperturas cubren todo),
+    la suma ponderada de aperturas tiene que replicar el índice de la división publicado.
+    (Donde hay residual la igualdad vale por construcción, así que no es un test.)
+    """
+    pi = variaciones(panel)
+    filas = []
+    for r in REGIONES:
+        its = [i for i in items if i.region == r]
+        divs_con_res = {i.division for i in its if i.residual}
+        for d in sorted({i.division for i in its} - divs_con_res):
+            sub = [i for i in its if i.division == d]
+            if len(sub) < 2:
+                continue  # una sola apertura = la división misma
+            ids = [i.id for i in sub]
+            w = pesos_efectivos(sub, panel[ids])
+            rec = (w * pi[ids]).sum(axis=1, min_count=1)
+            pub = divisiones[(divisiones.region == r) & (divisiones.codigo.str.zfill(2) == d)
+                             & (divisiones.clasificador == "Nivel general y divisiones COICOP")].set_index("fecha")["indice"].sort_index()
+            dev = (rec - (pub / pub.shift(1) - 1) * 100).dropna()
+            dev = dev[dev.index >= RECON_DESDE]
+            filas.append({"region": r, "division": d, "max_abs_pp": round(float(dev.abs().max()), 4), "mediana_abs_pp": round(float(dev.abs().median()), 4)})
+    peor = max((f["max_abs_pp"] for f in filas), default=0.0)
+    return Check("divisiones_cubiertas_por_aperturas", peor <= 0.15, False,
+                 f"{len(filas)} divisiones×región cubiertas solo por aperturas; desvío máx {peor} pp (referencia 0,15)", {"detalle": filas})
+
+
 def check_outliers(panel: pd.DataFrame, z: float = 4.0) -> Check:
     """Marca (no bloquea) variaciones con |z| > 4 dentro de la serie de cada ítem (z robusto, MAD)."""
     pi = variaciones(panel).iloc[1:]

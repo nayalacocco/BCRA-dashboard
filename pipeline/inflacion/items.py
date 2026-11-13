@@ -42,6 +42,11 @@ class Item:
     peso_nacional: float  # W_r · w_{i|r}
 
 
+# Si lo no cubierto por las aperturas es menor a este porcentaje del peso de la división, se considera
+# redondeo de la tabla de ponderadores: no se crea residual y se reescalan los pesos cubiertos.
+UMBRAL_RESIDUAL = 0.01
+
+
 def division_of(code: str) -> str:
     return code.split(".")[0].zfill(2)
 
@@ -65,14 +70,31 @@ def leaves(codes: list[str]) -> list[str]:
     return sorted(c for c in codes if not any(o != c and o.startswith(c + ".") for o in codes))
 
 
+def imputar_con_division(s: pd.Series, idx_div: pd.Series) -> tuple[pd.Series, list[pd.Timestamp]]:
+    """
+    Completa meses sin dato con la variación de la división (criterio de imputación al agregado
+    superior, como hace INDEC). Caso real: abr–jul 2020 (prendas, restaurantes) por la cuarentena.
+    """
+    s = s.reindex(idx_div.index).copy()
+    faltan = list(s.index[s.isna()])
+    for f in faltan:
+        i = s.index.get_loc(f)
+        if i == 0:
+            continue
+        prev = s.iloc[i - 1]
+        s.iloc[i] = prev * idx_div.iloc[i] / idx_div.iloc[i - 1]
+    return s, faltan
+
+
 def build_panel(
     divisiones: pd.DataFrame, aperturas: pd.DataFrame, ponderadores: pd.DataFrame
 ) -> tuple[list[Item], pd.DataFrame, list[str]]:
     """
     Devuelve (items, panel de índices [fecha × item_id], advertencias).
-    El panel arranca en dic-2016 (base = 100).
+    El panel arranca en dic-2016 (base = 100). Los meses imputados quedan en `IMPUTADOS`.
     """
     warnings: list[str] = []
+    IMPUTADOS.clear()
     items: list[Item] = []
     cols: dict[str, pd.Series] = {}
 
@@ -93,22 +115,32 @@ def build_panel(
                 warnings.append(f"{r}: sin ponderador para la división {d}")
                 continue
             idx_d = dv[dv.codigo.str.zfill(2) == d].set_index("fecha")["indice"].sort_index()
-            covered = 0.0
-            acc = pd.Series(0.0, index=idx_d.index)
+            comps = []
             for c in by_div.get(d, []):
                 w = _peso(ponderadores, r, c)
                 if w is None or w <= 0:
                     warnings.append(f"{r}: apertura {c} sin ponderador; se omite")
                     continue
                 s = ap[ap.codigo == c].set_index("fecha")["indice"].sort_index()
+                s, faltan = imputar_con_division(s, idx_d)
+                if faltan:
+                    IMPUTADOS[f"{r}:{c}"] = [f"{f:%Y-%m}" for f in faltan]
+                comps.append((c, w, s))
+            covered = sum(w for _, w, _ in comps)
+            resto = w_d - covered
+            # Residuo de redondeo: se reescalan los pesos cubiertos al de la división
+            escala = w_d / covered if comps and 0 < resto < UMBRAL_RESIDUAL * w_d else 1.0
+            if escala != 1.0:
+                resto = 0.0
+            acc = pd.Series(0.0, index=idx_d.index)
+            for c, w, s in comps:
+                w = w * escala
                 iid = f"{r}:{c}"
                 cols[iid] = s
                 desc = ap.loc[ap.codigo == c, "descripcion"].iloc[0]
                 items.append(Item(iid, r, c, d, desc, False, w, W * w))
-                covered += w
-                acc = acc.add(w * s.reindex(acc.index), fill_value=np.nan)
+                acc = acc + w * s
 
-            resto = w_d - covered
             if resto > 1e-6:
                 idx_res = (w_d * idx_d - acc) / resto
                 iid = f"{r}:{d}.R"
@@ -122,6 +154,9 @@ def build_panel(
 
     panel = pd.DataFrame(cols).sort_index()
     return items, panel, warnings
+
+
+IMPUTADOS: dict[str, list[str]] = {}
 
 
 def variaciones(panel: pd.DataFrame) -> pd.DataFrame:

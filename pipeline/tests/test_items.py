@@ -96,3 +96,23 @@ def test_peso_nacional_suma_1():
     div, ap, pond, _ = _synthetic(3)
     items, _, _ = build_panel(div, ap, pond)
     assert sum(i.peso_nacional for i in items) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_imputacion_con_variacion_de_division():
+    from inflacion.items import imputar_con_division
+    idx_div = pd.Series([100.0, 110.0, 121.0, 133.1], index=FECHAS[:4])
+    s = pd.Series([100.0, 105.0, np.nan, 120.0], index=FECHAS[:4])
+    out, faltan = imputar_con_division(s, idx_div)
+    assert faltan == [FECHAS[2]]
+    assert out.iloc[2] == pytest.approx(105.0 * 1.1)
+
+
+def test_reconciliacion_con_meses_faltantes():
+    """Un mes sin dato en una apertura (como abr-2020) no rompe la reconstrucción del headline."""
+    div, ap, pond, _ = _synthetic(4)
+    mask = (ap.codigo == "01.1") & (ap.fecha == FECHAS[5])
+    ap.loc[mask, "indice"] = np.nan
+    items, panel, _ = build_panel(div, ap, pond)
+    assert not panel.isna().any().any()
+    check, rec = reconciliacion(items, panel, div)
+    assert rec.desvio_pp.abs().max() < 1e-8

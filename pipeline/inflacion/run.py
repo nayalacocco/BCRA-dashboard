@@ -26,8 +26,8 @@ import pandas as pd
 import requests
 
 from . import indec
-from .items import build_panel
-from .validate import check_fechas, check_outliers, check_ponderadores, reconciliacion, to_dict
+from .items import IMPUTADOS, build_panel
+from .validate import check_divisiones_cubiertas, check_fechas, check_outliers, check_ponderadores, reconciliacion, to_dict
 
 UA = {"User-Agent": "Mozilla/5.0 (Atlas WM bcra-dashboard pipeline; +https://github.com/nayalacocco/BCRA-dashboard)"}
 SCHEMA_VERSION = 1
@@ -71,7 +71,7 @@ def main() -> int:
 
     checks = [check_ponderadores(pond), check_fechas(div, ape, panel)]
     rec_check, rec = reconciliacion(items, panel, div)
-    checks += [rec_check, check_outliers(panel)]
+    checks += [rec_check, check_divisiones_cubiertas(items, panel, div), check_outliers(panel)]
 
     for c in checks:
         flag = "OK " if c.ok else ("FAIL" if c.bloqueante else "WARN")
@@ -80,10 +80,8 @@ def main() -> int:
         print(f"[WARN] {w}")
 
     # Diagnóstico de faltantes y meses fuera de tolerancia
-    for c in panel.columns:
-        na = panel.index[panel[c].isna()]
-        if len(na):
-            print(f"  faltantes {c}: {len(na)} meses, {na.min():%Y-%m} → {na.max():%Y-%m}")
+    for k, v in IMPUTADOS.items():
+        print(f"  imputado con variación de la división: {k} {v}")
     malos = rec[(rec.fecha >= "2017-01-01") & (rec.desvio_pp.abs() > 0.05)]
     for _, r in malos.iterrows():
         print(f"  fuera de tol: {r.scope} {r.fecha:%Y-%m} pub={r.publicado:.3f} rec={r.recomputado:.3f} d={r.desvio_pp:+.3f}")
@@ -117,6 +115,7 @@ def main() -> int:
         "pesos_region": indec.PESO_REGION,
         "checks": [to_dict(c) for c in checks],
         "advertencias": warns,
+        "imputados": IMPUTADOS,
         "metodologia": {
             "items": "Hojas de serie_ipc_aperturas.csv por región + un ítem 'Resto de división' por división×región derivado con ponderadores de base.",
             "peso_nacional": "W_region × w_item|region (ponderadores_ipc.xls, dic-2016).",
