@@ -38,7 +38,8 @@ from .reservas import (
 
 DESDE_COTIZ = "2019-01-01"
 DESDE_DIARIA_RESERVAS = "2024-01-02"  # primer dato diario de depósitos del Tesoro en ME (API 1266)
-MAX_DIAS = {"diaria": 7, "mensual": 75}
+MAX_DIAS = {"diaria": 7, "mensual": 75, "diaria_rezagada": 12}
+MAX_DIAS_COMPONENTES = 120  # antigüedad máxima de la planilla para combinarla con datos diarios
 
 FUENTES_META = {
     "brutas": ("BCRA, API v4 · variable 1244", "diaria"),
@@ -193,7 +194,13 @@ def construir(ins: Insumos, out: Path) -> dict:
     xdr = Serie.de(ins.xdr())
     planillas = ins.planillas()
     fechas_pl = sorted(planillas)
-    escalones = ins.compras_fmi()
+    try:
+        escalones = ins.compras_fmi()
+        error_fmi = None
+    except Exception as e:  # noqa: BLE001 — imf.org caído no debe frenar el resto del pipeline
+        escalones = None
+        error_fmi = f"{type(e).__name__}: {e}"[:300]
+        print(f"AVISO: sin datos del FMI ({error_fmi}); la réplica de la RIN queda sin dato")
 
     def dep_tesoro_usd(f: str) -> float | None:
         ars = S["dep_tesoro_ars"].en(f, max_dias=5)
@@ -207,7 +214,9 @@ def construir(ins: Insumos, out: Path) -> dict:
 
     comps = {f: comp_de(planillas[f]) for f in fechas_pl}
 
-    def compras_fmi_usd(f: str) -> float:
+    def compras_fmi_usd(f: str) -> float | None:
+        if escalones is None:
+            return None
         deg = 0.0
         for e in escalones:
             if e["fecha"] <= f:
@@ -246,7 +255,8 @@ def construir(ins: Insumos, out: Path) -> dict:
         if f < DESDE_DIARIA_RESERVAS:
             continue
         fp = max((x for x in fechas_pl if x <= f), default=None)
-        if fp is None:
+        if fp is None or dias_entre(fp, f) > MAX_DIAS_COMPONENTES:
+            # hueco de planillas (jul-2023 a may-2024 no publicadas): sin componentes mensuales vigentes
             continue
         c = comps[fp]
         brutas = S["reservas"].en(f)
@@ -265,7 +275,7 @@ def construir(ins: Insumos, out: Path) -> dict:
                 "netas_a": r1(r["netas_a"]),
                 "super_a": r1(r["super_a"]),
                 "netas_b": r1(r["netas_b"]),
-                "rin_fmi": r1(rin_fmi(brutas, enc, c, compras_fmi_usd(f))),
+                "rin_fmi": r1(rin_fmi(brutas, enc, c, fmi)) if (fmi := compras_fmi_usd(f)) is not None else None,
             }
         )
 
@@ -332,7 +342,9 @@ def construir(ins: Insumos, out: Path) -> dict:
             }
         )
     errs = [abs(x["error"]) for x in anclas if x["error"] is not None]
-    rin_publicable = bool(errs) and max(errs) <= TOLERANCIA_RIN and not any(e.get("aprox") for e in escalones)
+    rin_publicable = (
+        escalones is not None and bool(errs) and max(errs) <= TOLERANCIA_RIN and not any(e.get("aprox") for e in escalones)
+    )
 
     # ── Calendario ≤ 12 meses por deudor (último corte de planilla) ──
     t = c["tramos"]
@@ -384,12 +396,19 @@ def construir(ins: Insumos, out: Path) -> dict:
         "diaria": diaria,
         "mensual": mensual,
         "waterfalls": waterfalls,
+        "meta": {
+            k: {"fuente": FUENTES_META.get(k, ("Cálculo propio", None))[0],
+                "frecuencia": FUENTES_META.get(k, ("", None))[1],
+                "criterio": CRITERIOS.get(k, "")}
+            for k in set(FUENTES_META) | set(CRITERIOS)
+        },
         "calendario": calendario,
         "rin_fmi": {
             "publicable": rin_publicable,
             "tolerancia": TOLERANCIA_RIN,
             "anclas": anclas,
-            "escalones_fmi": escalones,
+            "escalones_fmi": escalones or [],
+            "error_fuente": error_fmi,
             "definicion": (
                 "Brutas − encajes − swaps (PBOC, BIS, ESF) − otros pasivos en ME de plazo original ≤ 1 año "
                 "− compras netas al FMI desde el inicio del programa (abril de 2025). Los depósitos y la "
@@ -445,7 +464,7 @@ def construir(ins: Insumos, out: Path) -> dict:
         "piso": r2(piso_u),
         "techo": r2(techo_u),
         "dist_techo_pct": r2((techo_u / o_u - 1) * 100),
-        "dist_piso_pct": r2((o_u / piso_u - 1) * 100),
+        "dist_piso_pct": r2((1 - piso_u / o_u) * 100),  # cuánto tendría que caer el oficial para tocar el piso
         "posicion_pct": r2((o_u - piso_u) / (techo_u - piso_u) * 100),
         "ritmo_oficial_3m": r2(g_o * 100),
         "ritmo_techo_3m": r2(g_t * 100) if g_t is not None else None,
@@ -526,7 +545,7 @@ def construir(ins: Insumos, out: Path) -> dict:
             "reservas": estado(S["reservas"].fechas[-1], "diaria"),
             "encajes": estado(S["encajes_usd"].fechas[-1], "diaria"),
             "dep_tesoro": estado(S["dep_tesoro_ars"].fechas[-1], "diaria"),
-            "compras_bcra": estado(comp_s.fechas[-1], "diaria"),
+            "compras_bcra": estado(comp_s.fechas[-1], "diaria_rezagada"),  # la variable 78 se publica con ~6 días hábiles de rezago
             "planilla_nedd": estado(fechas_pl[-1], "mensual"),
         },
     }

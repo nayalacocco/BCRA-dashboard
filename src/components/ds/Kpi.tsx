@@ -40,9 +40,30 @@ export interface KpiProps {
   hint?: string;
 }
 
-export function Kpi({ label, value, unit, delta, spark, context, hint }: KpiProps) {
+export function Kpi({ label, value, unit, delta, spark, context, hint, onClick }: KpiProps & { onClick?: () => void }) {
+  const cls = "px-4 py-3.5 border-r border-ds-rule last:border-r-0 [&:nth-child(2n)]:max-lg:border-r-0";
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={hint}
+        className={`${cls} text-left hover:bg-ds-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-ds-celeste`}
+      >
+        <KpiBody label={label} value={value} unit={unit} delta={delta} spark={spark} context={context} />
+      </button>
+    );
+  }
   return (
-    <div className="px-4 py-3.5 border-r border-ds-rule last:border-r-0 [&:nth-child(2n)]:max-lg:border-r-0" title={hint}>
+    <div className={cls} title={hint}>
+      <KpiBody label={label} value={value} unit={unit} delta={delta} spark={spark} context={context} />
+    </div>
+  );
+}
+
+function KpiBody({ label, value, unit, delta, spark, context }: KpiProps) {
+  return (
+    <>
       <p className="text-[12.5px] text-ds-text-2 leading-snug">{label}</p>
       <p className="tnum text-[26px] font-semibold tracking-[-0.01em] text-ds-head mt-1 leading-tight">
         {value}
@@ -51,7 +72,7 @@ export function Kpi({ label, value, unit, delta, spark, context, hint }: KpiProp
       {delta && <p className="tnum text-[12.5px] text-ds-text-2">{delta}</p>}
       {spark && <Sparkline data={spark} />}
       {context && <p className="tnum text-[11.5px] text-ds-muted mt-1">{context}</p>}
-    </div>
+    </>
   );
 }
 

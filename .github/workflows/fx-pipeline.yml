@@ -39,11 +39,16 @@ jobs:
       - name: Tests (fixtures reales de la planilla + perímetros)
         run: python -m pytest -q tests/test_fx.py
       - name: Pipeline (descarga, valida, exporta)
-        run: python -m fx.run --out ../data/fx
+        shell: bash
+        run: |
+          mkdir -p ../data/fx
+          set -o pipefail
+          python -u -m fx.run --out ../data/fx 2>&1 | tee ../data/fx/pipeline.log
       - name: Commit si cambió (main)
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         working-directory: .
         run: |
+          rm -f data/fx/pipeline.log
           CHANGES=$(git status --porcelain -- data/fx | grep -v 'manifest.json' || true)
           if [ -z "$CHANGES" ]; then echo "Sin datos nuevos"; exit 0; fi
           git config user.name "github-actions[bot]"
@@ -51,8 +56,8 @@ jobs:
           git add data/fx
           git commit -m "chore(data): tipo de cambio y reservas $(date -u +%F)"
           git pull --rebase && git push
-      - name: Commit a la rama del PR
-        if: github.event_name == 'pull_request'
+      - name: Commit a la rama del PR (también si falla, con el log)
+        if: always() && github.event_name == 'pull_request'
         working-directory: .
         run: |
           git config user.name "github-actions[bot]"
