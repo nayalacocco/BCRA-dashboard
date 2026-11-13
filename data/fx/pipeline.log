@@ -1,0 +1,9 @@
+Reservas 2026-11-11: brutas 49336.0 · netas A 10793.4 · super A 8397.8 · netas B -15329.8 (planilla 2026-09-30)
+RIN FMI (réplica) -1493.3 · publicable=False
+  ancla 2024-12-31: staff -2400.0 · réplica -658.3 · error 1741.7
+  ancla 2025-06-13: staff -4700.0 · réplica -2733.1 · error 1966.9
+  ancla 2025-12-31: staff -11700.0 · réplica -9594.5 · error 2105.5
+  ancla 2026-05-18: staff -6500.0 · réplica -3304.9 · error 3195.1
+Waterfall OK=True · no doble conteo OK=True {'desembolso': 1000.0, 'delta_super_a': 0.0, 'delta_netas_b': 1000.0}
+Planillas faltantes: ['2023-07', '2023-08', '2023-09', '2023-10', '2023-11', '2023-12', '2024-01', '2024-02', '2024-03', '2024-04', '2024-05']
+Banda 2026-11-13: oficial 1547.03 piso 706.07 techo 1968.01 · al techo 27.21% · meses None
