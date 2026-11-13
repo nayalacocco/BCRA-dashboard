@@ -23,6 +23,18 @@ export function formatDateTime(date: Date): string {
   });
 }
 
+/** Formatea un timestamp ISO a "DD/MM/YY HH:mm" en hora de Buenos Aires. Devuelve "—" si es inválido. */
+export function formatTimestampART(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString("es-AR", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+}
+
 /** Formatea una fecha "YYYY-MM-DD" a "MMM YY" (para ejes de gráficos) */
 export function formatDateShort(isoDate: string): string {
   if (!isoDate) return "";
