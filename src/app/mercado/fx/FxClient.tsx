@@ -366,7 +366,7 @@ export function FxClient() {
       // TCRM diario desde datos.gob.ar — BCRA multilateral index base dic-2015=100
       // Series ID: 116.4_TCRZE_2015_D_36_4
       fetch(
-        "https://apis.datos.gob.ar/series/api/series/?ids=116.4_TCRZE_2015_D_36_4&limit=3000&sort=asc&format=json",
+        "https://apis.datos.gob.ar/series/api/series/?ids=116.4_TCRZE_2015_D_36_4&limit=3000&sort=desc&format=json",
         { headers: { "Accept": "application/json" } }
       ).then((r) => r.json()),
       // BYMA sovereign bonds for implied FX calculation
@@ -382,7 +382,8 @@ export function FxClient() {
       }
       if (tcrmRes.status === "fulfilled" && tcrmRes.value?.data) {
         const rows: [string, number | null][] = (tcrmRes.value as { data: [string, number | null][] }).data ?? [];
-        setTcrm(rows.filter(([, v]) => v != null).map(([fecha, valor]) => ({ fecha, valor: valor! })));
+        // sort=desc trae las últimas 3000 obs.; invertimos para orden cronológico
+        setTcrm(rows.filter(([, v]) => v != null).map(([fecha, valor]) => ({ fecha, valor: valor! })).reverse());
       }
       if (bymaRes.status === "fulfilled" && bymaRes.value?.publicBonds) {
         setBonds(bymaRes.value.publicBonds as BymaQuote[]);
