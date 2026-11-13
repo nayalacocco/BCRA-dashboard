@@ -20,7 +20,7 @@ import {
   filterByPeriod,
   type Period,
 } from "@/components/dashboard/PeriodSelector";
-import type { InflacionData, SeriesPoint } from "@/lib/indec/inflacion";
+import { TASAS_BCRA, type InflacionData, type SeriesPoint, type TasaKey } from "@/lib/indec/inflacion";
 
 // ---- Helpers ----
 
@@ -60,6 +60,12 @@ function formatMonthTick(v: string) {
 
 function fmtPct(v: number, decimals = 1) {
   return `${v.toLocaleString("es-AR", { maximumFractionDigits: decimals })}%`;
+}
+
+/** "2026-10-01" → "Oct 26" */
+function fmtMes(iso: string) {
+  const [y, m] = iso.split("-");
+  return `${MONTHS_ES[parseInt(m, 10) - 1]} ${y.slice(2)}`;
 }
 
 function fmtNum(v: number) {
@@ -249,36 +255,35 @@ export function InflacionClient({ data }: { data: InflacionData }) {
       ipcInteranual: filterByPeriod(ipcInteranual,     period),
       remT:          filterByPeriod(data.remT,         period),
       remT1:         filterByPeriod(data.remT1,        period),
-      remT6:         filterByPeriod(data.remT6,        period),
       utdt12m:       filterByPeriod(data.utdt12m,      period),
-      politicaMon:   filterByPeriod(data.politicaMon,  period),
-      badlar:        filterByPeriod(data.badlar,        period),
-      call:          filterByPeriod(data.call,          period),
-      pf30:          filterByPeriod(data.pf30,          period),
-      pf60:          filterByPeriod(data.pf60,          period),
     }),
     [data, ipcInteranual, period]
   );
 
   // Latest dates
   const ipcDate  = lastDate(data.ipcMensual);
-  const remDate  = lastDate(data.remT);
-  const tasDate  = lastDate(data.badlar);
+  // Mes del último relevamiento REM = mes objetivo de "mes corriente"
+  const remRelev = lastDate(data.remT);
+  const tasDate  = lastDate(data.tasasUltimos.badlar);
+  const tasaKeys = Object.keys(TASAS_BCRA) as TasaKey[];
+  const tasasF = useMemo(() => {
+    const out = {} as Record<TasaKey, SeriesPoint[]>;
+    for (const k of tasaKeys) out[k] = filterByPeriod(data.tasasMensual[k] ?? [], period);
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.tasasMensual, period]);
 
   // Tasa real implícita: BADLAR/12 − inflación mensual
   const tasaReal = useMemo(() => {
-    const badlarMap = new Map(data.badlar.map((p) => [p.fecha, p.valor]));
+    // BADLAR: promedio mensual de la serie diaria del BCRA
+    const badlarMap = new Map((data.tasasMensual.badlar ?? []).map((p) => [p.fecha, p.valor]));
     return data.ipcMensual
       .filter((p) => badlarMap.has(p.fecha))
       .map((p) => ({
         fecha: p.fecha,
         valor: parseFloat(((badlarMap.get(p.fecha)! / 12) - p.valor).toFixed(2)),
       }));
-  }, [data.badlar, data.ipcMensual]);
-
-  // Last annual projections (single-point value)
-  const rem25Last = lastVal(data.remAnual25);
-  const rem26Last = lastVal(data.remAnual26);
+  }, [data.tasasMensual, data.ipcMensual]);
 
   return (
     <div className="space-y-10">
@@ -296,12 +301,12 @@ export function InflacionClient({ data }: { data: InflacionData }) {
           {ipcDate && (
             <div className="flex items-center gap-2 bg-orange-50 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 px-3 py-1.5 rounded-lg text-sm font-medium">
               <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse" />
-              IPC al: {ipcDate.slice(0, 7)}
+              IPC al: {fmtMes(ipcDate)}
             </div>
           )}
           {tasDate && (
             <div className="text-xs text-slate-400 dark:text-slate-600">
-              Tasas al: {tasDate.slice(0, 7)}
+              Tasas al: {tasDate.split("-").reverse().join("/")}
             </div>
           )}
         </div>
@@ -467,19 +472,14 @@ export function InflacionClient({ data }: { data: InflacionData }) {
         </div>
 
         {/* Proyecciones anuales */}
-        {(rem25Last != null || rem26Last != null) && (
+        {data.remAnuales.length > 0 && (
           <div className="flex flex-wrap gap-3 mb-5">
             <p className="text-xs text-slate-500 dark:text-slate-400 w-full font-semibold uppercase tracking-wide">
-              Proyecciones interanuales (REM, mediana)
+              Proyección inflación anual dic/dic (REM, mediana{remRelev ? ` — relevamiento ${fmtMes(remRelev)}` : ""})
             </p>
-            <StatChip
-              label="2025"
-              value={rem25Last != null ? fmtPct(rem25Last) : null}
-            />
-            <StatChip
-              label="2026"
-              value={rem26Last != null ? fmtPct(rem26Last) : null}
-            />
+            {data.remAnuales.map((a) => (
+              <StatChip key={a.anio} label={String(a.anio)} value={fmtPct(a.valor)} />
+            ))}
           </div>
         )}
 
@@ -529,68 +529,26 @@ export function InflacionClient({ data }: { data: InflacionData }) {
           BLOQUE 3: TASAS DE MERCADO
       ================================================================ */}
       <BlockSection title="Tasas de Mercado" icon="📉" color="blue">
-        {remDate && (
-          <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-            Fuente: BCRA · Última actualización: {tasDate?.slice(0, 7) ?? "—"}
-          </p>
-        )}
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+          Fuente: API BCRA (series diarias). Tarjetas: último dato vs. día hábil anterior. Gráfico: promedio mensual.
+          La tasa de política monetaria dejó de existir en jul-2025.
+        </p>
 
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-5">
-          <DeltaKPICard
-            label="Política Monetaria"
-            value={lastVal(data.politicaMon)}
-            suffix="% n.a."
-            date={lastDate(data.politicaMon)}
-            delta={getDelta(data.politicaMon)}
-            color="#1c7ed6"
-            positiveIsGood={false}
-            decimals={2}
-            dateFormat="month"
-          />
-          <DeltaKPICard
-            label="BADLAR Privada"
-            value={lastVal(data.badlar)}
-            suffix="% n.a."
-            date={lastDate(data.badlar)}
-            delta={getDelta(data.badlar)}
-            color="#1971c2"
-            positiveIsGood={false}
-            decimals={2}
-            dateFormat="month"
-          />
-          <DeltaKPICard
-            label="Call Interbancario"
-            value={lastVal(data.call)}
-            suffix="% n.a."
-            date={lastDate(data.call)}
-            delta={getDelta(data.call)}
-            color="#1864ab"
-            positiveIsGood={false}
-            decimals={2}
-            dateFormat="month"
-          />
-          <DeltaKPICard
-            label="Plazo Fijo 30–59 d"
-            value={lastVal(data.pf30)}
-            suffix="% n.a."
-            date={lastDate(data.pf30)}
-            delta={getDelta(data.pf30)}
-            color="#2196f3"
-            positiveIsGood={false}
-            decimals={2}
-            dateFormat="month"
-          />
-          <DeltaKPICard
-            label="Plazo Fijo +60 d"
-            value={lastVal(data.pf60)}
-            suffix="% n.a."
-            date={lastDate(data.pf60)}
-            delta={getDelta(data.pf60)}
-            color="#4dabf7"
-            positiveIsGood={false}
-            decimals={2}
-            dateFormat="month"
-          />
+          {tasaKeys.map((k) => (
+            <DeltaKPICard
+              key={k}
+              label={TASAS_BCRA[k].label}
+              value={lastVal(data.tasasUltimos[k] ?? [])}
+              suffix="% n.a."
+              date={lastDate(data.tasasUltimos[k] ?? [])}
+              delta={getDelta(data.tasasUltimos[k] ?? [])}
+              color={TASAS_BCRA[k].color}
+              positiveIsGood={false}
+              decimals={2}
+              staleAfterDays={10}
+            />
+          ))}
         </div>
 
         {/* Multi-tasas chart */}
@@ -600,16 +558,16 @@ export function InflacionClient({ data }: { data: InflacionData }) {
               Evolución de Tasas de Interés
             </h3>
             <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
-              % n.a. mensual
+              % n.a. · promedio mensual
             </span>
           </div>
           <MultiSeriesChart
-            series={[
-              { key: "politica",  label: "Política Monetaria", data: f.politicaMon, color: "#1c7ed6" },
-              { key: "badlar",    label: "BADLAR Privada",      data: f.badlar,      color: "#1971c2" },
-              { key: "call",      label: "Call",                data: f.call,        color: "#1864ab" },
-              { key: "pf30",      label: "Plazo Fijo 30d",      data: f.pf30,        color: "#2196f3" },
-            ]}
+            series={tasaKeys.map((k) => ({
+              key: k,
+              label: TASAS_BCRA[k].label,
+              data: tasasF[k],
+              color: TASAS_BCRA[k].color,
+            }))}
             height={280}
             unit="%"
             showZeroLine={false}
