@@ -1,0 +1,29 @@
+name: FX probe (temporal, solo rama fx-raw-probe)
+on:
+  push:
+    branches: [fx-raw-probe]
+permissions:
+  contents: write
+jobs:
+  probe:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: pipeline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests==2.32.3
+      - run: python -m fx.fuentes --raw ../_raw --desde 2016
+      - name: Commit crudo
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f _raw
+          git commit -m "probe: volcado crudo fx [skip vercel]" || exit 0
+          git push origin HEAD:fx-raw-probe
