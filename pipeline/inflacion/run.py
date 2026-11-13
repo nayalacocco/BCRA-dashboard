@@ -79,6 +79,15 @@ def main() -> int:
     for w in warns:
         print(f"[WARN] {w}")
 
+    # Diagnóstico de faltantes y meses fuera de tolerancia
+    for c in panel.columns:
+        na = panel.index[panel[c].isna()]
+        if len(na):
+            print(f"  faltantes {c}: {len(na)} meses, {na.min():%Y-%m} → {na.max():%Y-%m}")
+    malos = rec[(rec.fecha >= "2017-01-01") & (rec.desvio_pp.abs() > 0.05)]
+    for _, r in malos.iterrows():
+        print(f"  fuera de tol: {r.scope} {r.fecha:%Y-%m} pub={r.publicado:.3f} rec={r.recomputado:.3f} d={r.desvio_pp:+.3f}")
+
     # Reporte de reconciliación por mes (Nacional), útil en los logs del PR
     nac = rec[rec.scope == "Nacional"].tail(24)
     print("\nReconciliación Nacional (últimos 24 meses): fecha | publicado | recomputado | desvío pp")
