@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   CartesianGrid,
+  BarChart,
   ComposedChart,
   Line,
   LineChart,
@@ -48,10 +49,9 @@ export function rango(fechas: string[], period: Period): [number, number] {
   return [a, b];
 }
 
-/** Tramos de π_i − π_t: los primeros N_DEBAJO no superan al nivel general; solo se grafican los de arriba. */
+/** Tramos de π_i − π_t (pp): los primeros N_DEBAJO (fríos) no superan al nivel general; los otros (cálidos) sí. */
 const N_DEBAJO = 4;
-const BUCKET_COLORS: Record<number, string> = { 4: "#f3d9a4", 5: "#e9b949", 6: "#e08e2b", 7: "#c2255c" };
-const TRAMOS_ARRIBA = [4, 5, 6, 7];
+const BUCKET_COLORS = ["#1c7ed6", "#4dabf7", "#748ffc", "#a5b4fc", "#f3d9a4", "#e9b949", "#e08e2b", "#c2255c"];
 const K_COLORS: Record<K, string> = { "3": "#fab005", "6": "#f76707", "12": "#e03131" };
 const KS: K[] = ["3", "6", "12"];
 
@@ -487,42 +487,55 @@ export function DifusionClient({
 
         <div className="space-y-5">
           <ChartCard
-            title="Ítems que suben más que el nivel general"
+            title="Distribución de las variaciones mensuales"
             badge={pond === "pond" ? "% de la canasta" : "% de los ítems"}
-            formula="D_t = Σ ω_i · 1[π_i,t > π_t]"
-            nota={`Cada barra es la difusión D del mes, abierta según cuánto supera cada ítem al nivel general (puntos porcentuales de variación m/m). Línea: promedio de 3 meses. Franja gris: zona intermedia (${fmt(P.umbral_D_concentrada, 0)}–${fmt(P.umbral_D_generalizada, 0)} %); por debajo la suba es concentrada, por encima generalizada.`}
+            nota="Porcentaje de la canasta según cuánto se aparta la variación mensual de cada ítem de la del nivel general de ese mes (puntos porcentuales). Tonos fríos: subió menos que el nivel general; cálidos: subió más. La frontera entre ambos es la inflación del mes."
           >
-            <Leyenda
-              items={[
-                ...TRAMOS_ARRIBA.map((j) => ({ label: `${data.buckets_etiquetas[j]} pp`, color: BUCKET_COLORS[j] })),
-                { label: "Promedio 3 meses", color: "#f76707" },
-              ]}
-            />
-            <ResponsiveContainer width="100%" height={300}>
-              <ComposedChart data={rows} margin={{ top: 4, right: 8, left: 0, bottom: 4 }} barCategoryGap={idx.length > 40 ? 0 : "12%"}>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 mb-3">
+              {data.buckets_etiquetas.map((e, j) => (
+                <div key={e} className="flex items-center gap-1">
+                  <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ backgroundColor: BUCKET_COLORS[j] }} />
+                  <span className="text-[11px] text-slate-400">{e} pp</span>
+                </div>
+              ))}
+            </div>
+            <ResponsiveContainer width="100%" height={320}>
+              <BarChart data={rows} margin={{ top: 4, right: 8, left: 0, bottom: 4 }} barCategoryGap={idx.length > 40 ? 0 : "12%"}>
                 <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
                 <XAxis dataKey="fecha" tickFormatter={fmtMes} tick={axisTick} interval={tickInterval} />
-                <YAxis
-                  domain={[0, Math.max(60, dominio(["D", "D3"], 10)[1])]}
-                  tickFormatter={(x) => `${x}%`}
-                  tick={axisTick}
-                  width={40}
-                />
-                <ReferenceArea y1={P.umbral_D_concentrada} y2={P.umbral_D_generalizada} fill="#64748b" fillOpacity={0.14} />
+                <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tickFormatter={(x) => `${x}%`} tick={axisTick} width={40} allowDataOverflow />
                 <ReferenceLine y={50} stroke="#475569" strokeDasharray="4 3" />
                 <Tooltip
                   {...tooltipStyle}
                   labelFormatter={fmtMes}
-                  formatter={(val: number, key: string) =>
-                    key === "D3" ? [`${fmt(val)} %`, "Promedio 3 meses"] : [`${fmt(val)} %`, `${data.buckets_etiquetas[parseInt(key.slice(1), 10)]} pp`]
-                  }
-                  itemSorter={(it) => (it.dataKey === "D3" ? -99 : -parseInt(String(it.dataKey).slice(1), 10))}
+                  formatter={(val: number, key: string) => [`${fmt(val)} %`, `${data.buckets_etiquetas[parseInt(key.slice(1), 10)]} pp vs. nivel general`]}
+                  itemSorter={(it) => -parseInt(String(it.dataKey).slice(1), 10)}
                 />
-                {TRAMOS_ARRIBA.map((j) => (
+                {data.buckets_etiquetas.map((_, j) => (
                   <Bar key={j} dataKey={`b${j}`} stackId="b" fill={BUCKET_COLORS[j]} isAnimationActive={false} />
                 ))}
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+
+          <ChartCard
+            title="Difusión puntual"
+            badge="% por encima del nivel general"
+            formula="D_t = Σ ω_i · 1[π_i,t > π_t]"
+            nota={`Franja gris: zona intermedia (${fmt(P.umbral_D_concentrada, 0)}–${fmt(P.umbral_D_generalizada, 0)} %). Por debajo, la suba es concentrada; por encima, generalizada.`}
+          >
+            <Leyenda items={[{ label: "D mensual", color: "#fdba74" }, { label: "Promedio 3 meses", color: "#f76707" }]} />
+            <ResponsiveContainer width="100%" height={240}>
+              <LineChart data={rows} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={GRID} />
+                <XAxis dataKey="fecha" tickFormatter={fmtMes} tick={axisTick} interval={tickInterval} />
+                <YAxis domain={dominio(["D", "D3"], 5)} tickFormatter={(x) => `${x}%`} tick={axisTick} width={40} />
+                <ReferenceArea y1={P.umbral_D_concentrada} y2={P.umbral_D_generalizada} fill="#64748b" fillOpacity={0.14} />
+                <ReferenceLine y={50} stroke="#475569" strokeDasharray="4 3" />
+                <Tooltip {...tooltipStyle} labelFormatter={fmtMes} formatter={(val: number, key: string) => [`${fmt(val)} %`, key === "D" ? "D mensual" : "Promedio 3 meses"]} />
+                <Line type="linear" dataKey="D" stroke="#fdba74" strokeWidth={1} dot={false} isAnimationActive={false} />
                 <Line type="linear" dataKey="D3" stroke="#f76707" strokeWidth={2.5} dot={false} isAnimationActive={false} connectNulls />
-              </ComposedChart>
+              </LineChart>
             </ResponsiveContainer>
           </ChartCard>
         </div>

@@ -25,7 +25,7 @@ Sea π_{i,t} la variación mensual del ítem i, π_t la del nivel general recomp
 | Métrica | Fórmula | Lectura |
 |---|---|---|
 | Difusión D_t | Σ ω_{i,t} · 1[r_{i,t} > 0] | % de la canasta que sube más que el promedio. ~50 % = distribución simétrica; bajo = pocos rubros traccionan |
-| Tramos | % de la canasta con π_{i,t} − π_t en < −2, −2 a −1, −1 a −0,5, −0,5 a 0, 0 a 0,5, 0,5 a 1, 1 a 2, > 2 pp | Los tramos positivos suman D: la página grafica solo esos, para ver cuánto supera cada ítem al promedio |
+| Tramos | % de la canasta con π_{i,t} − π_t en < −2, −2 a −1, −1 a −0,5, −0,5 a 0, 0 a 0,5, 0,5 a 1, 1 a 2, > 2 pp | Fríos (≤ 0): subieron menos que el nivel general; cálidos (> 0): más. Los cálidos suman D |
 | Rotación C_t(k) | Σ ω_i · 1[r_i > 0 en algún mes de la ventana k] | % de la canasta que lideró al menos una vez |
 | Referencia C\*_t(k) | 1 − Π_{s}(1 − D_s) | Lo que daría C(k) si liderar un mes fuera independiente de haber liderado otro. C < C\* ⇒ lideran los mismos |
 | Acumulada A_t(k) | Σ ω_{i,t−k} · 1[R_i(k) > 0], R = Σ r | % de la canasta que le ganó al promedio en la ventana. Pesos al inicio de la ventana (identidad de Laspeyres exacta) |
