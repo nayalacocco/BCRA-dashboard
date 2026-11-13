@@ -12,7 +12,7 @@ import {
   type Period,
 } from "@/components/dashboard/PeriodSelector";
 import { VARIABLES_CONFIG } from "@/lib/bcra/constants";
-import { formatDate } from "@/lib/bcra/format";
+import { formatDate, formatTimestampART } from "@/lib/bcra/format";
 import type { IndecDashboardData } from "@/lib/indec/client";
 
 // ---- Types ----
@@ -105,7 +105,7 @@ function RatioCard({
       </p>
       <div className="flex items-baseline gap-1">
         <span className="font-mono text-xl font-bold text-slate-700 dark:text-slate-200">
-          ${formatted}
+          {value != null ? `$${formatted}` : "—"}
         </span>
         {suffix && (
           <span className="text-xs text-slate-400">{suffix}</span>
@@ -259,10 +259,12 @@ export function DashboardClient({
   }), [indecData, period]);
 
   // ---- Ratio calculations ----
-  const bmReservas =
-    (latestVal(latestValues, 15) ?? 0) / (latestVal(latestValues, 1) ?? 1);
-  const m2Reservas =
-    (latestVal(latestValues, 109) ?? 0) / (latestVal(latestValues, 1) ?? 1);
+  // null si falta algún dato (antes caía a 0/1 y mostraba "$0")
+  const ratio = (num?: number, den?: number) =>
+    num != null && den != null && den !== 0 ? num / den : null;
+  const reservas = latestVal(latestValues, 1);
+  const bmReservas = ratio(latestVal(latestValues, 15), reservas);
+  const m2Reservas = ratio(latestVal(latestValues, 109), reservas);
   const usdOficial = latestVal(latestValues, 5) ?? null;
 
   return (
@@ -282,12 +284,12 @@ export function DashboardClient({
           {lastBCRAUpdate && (
             <div className="flex items-center gap-2 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 px-3 py-1.5 rounded-lg text-sm font-medium">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              Datos al: {formatDate(lastBCRAUpdate)}
+              Último dato: {formatDate(lastBCRAUpdate)}
             </div>
           )}
           {pageGeneratedAt && (
             <p className="text-xs text-slate-400 dark:text-slate-600">
-              Actualizado: {new Date(pageGeneratedAt).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })} ART
+              Actualizado: {formatTimestampART(pageGeneratedAt)} ART
             </p>
           )}
         </div>
@@ -554,6 +556,7 @@ export function DashboardClient({
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
           <DeltaKPICard
             label="Inflación Mensual"
+            deltaMode="pp"
             value={latestVal(latestValues, 27)}
             suffix="%"
             date={latestDate(latestValues, 27)}
@@ -564,6 +567,7 @@ export function DashboardClient({
           />
           <DeltaKPICard
             label="Inflación Interanual"
+            deltaMode="pp"
             value={latestVal(latestValues, 28)}
             suffix="%"
             date={latestDate(latestValues, 28)}
@@ -596,16 +600,18 @@ export function DashboardClient({
           />
           <DeltaKPICard
             label="BADLAR Privada"
+            deltaMode="pp"
             value={latestVal(latestValues, 7)}
             suffix="% n.a."
             date={latestDate(latestValues, 7)}
             delta={getDelta(historicData[7] ?? [])}
             color={VARIABLES_CONFIG[7]?.color}
             positiveIsGood={false}
-            decimals={3}
+            decimals={2}
           />
           <DeltaKPICard
             label="Inflación Esperada 12m"
+            deltaMode="pp"
             value={indecData?.inflacionEsperada.at(-1)?.valor ?? undefined}
             suffix="%"
             date={indecData?.inflacionEsperada.at(-1)?.fecha}

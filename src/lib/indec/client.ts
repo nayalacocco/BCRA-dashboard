@@ -34,7 +34,10 @@ export interface IndecDashboardData {
 
 /**
  * Fetch multiple time series in a single request.
- * Returns data sorted oldest→newest (asc) — ready for Recharts.
+ * Returns the MOST RECENT `limit` observations, sorted oldest→newest (asc) — ready for Recharts.
+ *
+ * Importante: se pide sort=desc y se invierte acá. Con sort=asc + limit, la API devuelve
+ * las PRIMERAS N observaciones del índice de fechas (ej.: series desde 1990 → cortaban en 2014).
  *
  * If the API is unavailable, throws an error so callers can catch it gracefully.
  */
@@ -45,7 +48,7 @@ export async function fetchINDECSeries(
   const url = new URL(`${BASE_URL}/series/`);
   url.searchParams.set("ids", ids.join(","));
   url.searchParams.set("limit", String(limit));
-  url.searchParams.set("sort", "asc");
+  url.searchParams.set("sort", "desc");
   url.searchParams.set("format", "json");
 
   const res = await fetch(url.toString(), {
@@ -62,7 +65,8 @@ export async function fetchINDECSeries(
   const result: Record<string, SeriesPoint[]> = {};
   for (const id of ids) result[id] = [];
 
-  for (const row of json.data) {
+  // La API devuelve desc (más reciente primero); recorremos al revés para quedar en orden asc.
+  for (const row of [...json.data].reverse()) {
     const fecha = row[0] as string;
     ids.forEach((id, i) => {
       const val = row[i + 1];

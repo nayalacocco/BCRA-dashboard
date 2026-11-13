@@ -18,6 +18,12 @@ interface DeltaKPICardProps {
   showSign?: boolean;
   /** Muestra valor compacto (divide por 1000 y agrega "B") para M$ grandes */
   compact?: boolean;
+  /**
+   * "pct" (default): variación absoluta + variación porcentual.
+   * "pp": para tasas/porcentajes — muestra solo la diferencia en puntos porcentuales
+   * (una variación % de una tasa, ej. 1,7%→1,9% = "+11,76%", es engañosa).
+   */
+  deltaMode?: "pct" | "pp";
 }
 
 function formatCompact(value: number, decimals: number): { display: string; scale: string } {
@@ -61,6 +67,7 @@ export function DeltaKPICard({
   positiveIsGood = true,
   showSign = false,
   compact = false,
+  deltaMode = "pct",
 }: DeltaKPICardProps) {
   // Format main value
   let displayValue = "—";
@@ -95,19 +102,39 @@ export function DeltaKPICard({
 
   const arrow = isNeutral ? "–" : isPositive ? "▲" : "▼";
 
-  // Absolute delta formatted
-  const absFormatted =
-    hasAbsDelta && delta!.abs != null
-      ? (delta!.abs > 0 ? "+" : "") +
+  // Absolute delta formatted — en la misma escala que el valor principal
+  let absFormatted: string | null = null;
+  if (hasAbsDelta && delta!.abs != null) {
+    const sign = delta!.abs > 0 ? "+" : "";
+    if (compact && value != null && Math.abs(value) >= 1_000) {
+      // Misma escala que el valor principal (ej. valor "46,8B" → delta "-0,15B", no "-153.460")
+      const div = Math.abs(value) >= 1_000_000 ? 1_000_000 : 1_000;
+      const scale = div === 1_000_000 ? "B" : "K";
+      absFormatted =
+        sign +
+        (delta!.abs / div).toLocaleString("es-AR", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }) +
+        scale;
+    } else {
+      const d = decimals > 2 ? 2 : decimals;
+      absFormatted =
+        sign +
         delta!.abs.toLocaleString("es-AR", {
-          minimumFractionDigits: decimals > 2 ? 2 : decimals,
-          maximumFractionDigits: decimals > 2 ? 2 : decimals,
-        })
-      : null;
+          minimumFractionDigits: d,
+          maximumFractionDigits: d,
+        });
+    }
+    if (deltaMode === "pp") absFormatted += " pp";
+  }
 
   const pctFormatted =
-    hasPctDelta && delta!.pct != null
-      ? Math.abs(delta!.pct).toFixed(2) + "%"
+    deltaMode === "pct" && hasPctDelta && delta!.pct != null
+      ? Math.abs(delta!.pct).toLocaleString("es-AR", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }) + "%"
       : null;
 
   return (
