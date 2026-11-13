@@ -92,6 +92,10 @@ def main() -> int:
     for _, r in nac.iterrows():
         print(f"  {r.fecha:%Y-%m} | {r.publicado:6.3f} | {r.recomputado:6.3f} | {r.desvio_pp:+.4f}")
 
+    from .sanity import reporte
+    print("\nSanity check difusión (comparable con Banco Galicia):")
+    print(reporte(items, panel))
+
     bloqueante_fallo = any(not c.ok and c.bloqueante for c in checks)
     if args.check:
         return 1 if bloqueante_fallo else 0
