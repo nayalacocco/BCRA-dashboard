@@ -98,8 +98,9 @@ export interface BymaData {
 const bymaAgent = new https.Agent({ rejectUnauthorized: false });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function bymaPost(path: string): Promise<Record<string, any>[]> {
-  const json = await new Promise<unknown>((resolve, reject) => {
+function bymaPostPage(path: string, page: number): Promise<unknown> {
+  const body = JSON.stringify({ ...JSON.parse(DEFAULT_BODY), page_number: page });
+  return new Promise<unknown>((resolve, reject) => {
     const req = https.request(
       {
         hostname: BASE_HOST,
@@ -107,13 +108,13 @@ async function bymaPost(path: string): Promise<Record<string, any>[]> {
         method:   "POST",
         headers:  {
           ...HEADERS,
-          "Content-Length": Buffer.byteLength(DEFAULT_BODY),
+          "Content-Length": Buffer.byteLength(body),
         },
         agent: bymaAgent,
       },
       (res) => {
         if (res.statusCode !== 200) {
-          reject(new Error(`BYMA ${res.statusCode} — ${path}`));
+          reject(new Error(`BYMA ${res.statusCode} — ${path} p${page}`));
           res.resume();
           return;
         }
@@ -126,17 +127,34 @@ async function bymaPost(path: string): Promise<Record<string, any>[]> {
       }
     );
     req.on("error", reject);
-    req.write(DEFAULT_BODY);
+    req.write(body);
     req.end();
   });
+}
 
+/** Máximo de páginas a recorrer por panel (≈189 registros por página). */
+const MAX_PAGES = 15;
+
+/**
+ * POST a un panel de ByMA recorriendo TODAS las páginas.
+ * La API pagina ({ content: { page_count }, data }); antes solo se leía la página 1
+ * (en "public-bonds" eso dejaba afuera todo lo posterior a la letra B: LECAP, BONCAP, Boncer…).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function bymaPost(path: string): Promise<Record<string, any>[]> {
+  const first = await bymaPostPage(path, 1);
   // Some endpoints return a raw array; others wrap in { data: [...] }
-  if (Array.isArray(json)) {
+  if (Array.isArray(first)) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return json as Record<string, any>[];
+    return first as Record<string, any>[];
   }
+  const j = first as { data?: unknown[]; content?: { page_count?: number } };
+  const pageCount = Math.min(j.content?.page_count ?? 1, MAX_PAGES);
+  const rest = await Promise.all(
+    Array.from({ length: Math.max(pageCount - 1, 0) }, (_, i) => bymaPostPage(path, i + 2))
+  );
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return ((json as Record<string, unknown>)?.data ?? []) as Record<string, any>[];
+  return [j, ...(rest as typeof j[])].flatMap((p) => (p?.data ?? []) as Record<string, any>[]);
 }
 
 // ---- Normalizers ----
