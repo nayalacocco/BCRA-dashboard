@@ -5,6 +5,7 @@
 
 import { fetchINDECSeries, type SeriesPoint } from "./client";
 import { getVariableHistorico } from "@/lib/bcra/client";
+import { fetchIpcIndec } from "./ipc-indec";
 
 export type { SeriesPoint };
 
@@ -76,6 +77,16 @@ async function fetchCallMensual(): Promise<SeriesPoint[]> {
     .map(([fecha, { sum, n }]) => ({ fecha, valor: sum / n }));
 }
 
+/** Variación % entre cada punto y el de `lag` períodos antes (serie mensual ordenada asc). */
+function variacion(index: SeriesPoint[], lag: number): SeriesPoint[] {
+  const out: SeriesPoint[] = [];
+  for (let i = lag; i < index.length; i++) {
+    const base = index[i - lag].valor;
+    if (base > 0) out.push({ fecha: index[i].fecha, valor: (index[i].valor / base - 1) * 100 });
+  }
+  return out;
+}
+
 export interface InflacionData {
   // IPC
   ipcMensual:     SeriesPoint[];  // % mensual NGL
@@ -83,6 +94,12 @@ export interface InflacionData {
   ipcNucleo:      SeriesPoint[];  // índice núcleo
   ipcRegulados:   SeriesPoint[];  // índice regulados
   ipcEstacional:  SeriesPoint[];  // índice estacionales
+  ipcInteranual:  SeriesPoint[];  // % i.a. nivel general
+  nucleoMensual:    SeriesPoint[]; // % mensual núcleo
+  reguladosMensual: SeriesPoint[]; // % mensual regulados
+  estacionalMensual: SeriesPoint[]; // % mensual estacionales
+  /** "INDEC" si vino del CSV oficial (al día); "datos.gob.ar" si se usó el respaldo (rezago de ~2 meses) */
+  ipcFuente: "INDEC" | "datos.gob.ar";
   // Expectativas
   remT:           SeriesPoint[];  // REM mes corriente
   remT1:          SeriesPoint[];  // REM t+1
@@ -103,7 +120,8 @@ export async function fetchInflacionData(): Promise<InflacionData> {
   const expIds  = Object.values(EXPECTATIVAS_SERIES);
   const tasIds  = Object.values(TASAS_SERIES);
 
-  const [ipcRes, expRes, tasRes, callRes] = await Promise.allSettled([
+  const [indecRes, ipcRes, expRes, tasRes, callRes] = await Promise.allSettled([
+    fetchIpcIndec(),
     fetchINDECSeries(ipcIds, 500),
     fetchINDECSeries(expIds, 300),
     fetchINDECSeries(tasIds, 400),
@@ -119,12 +137,41 @@ export async function fetchInflacionData(): Promise<InflacionData> {
   if (tasRes.status === "rejected") console.error("[Inflacion] Tasas fetch failed:", tasRes.reason);
   if (callRes.status === "rejected") console.error("[Inflacion] Call (BCRA) fetch failed:", callRes.reason);
 
+  // IPC: CSV oficial de INDEC (al día) con respaldo en datos.gob.ar (rezago ~2 meses)
+  const indec = indecRes.status === "fulfilled" ? indecRes.value : null;
+  const nivelDg = ipc[IPC_SERIES.NIVEL_GENERAL] ?? [];
+  const nucleoDg = ipc[IPC_SERIES.NUCLEO] ?? [];
+  const reguladosDg = ipc[IPC_SERIES.REGULADOS] ?? [];
+  const estacionalDg = ipc[IPC_SERIES.ESTACIONALES] ?? [];
+
+  const ipcBlock = indec
+    ? {
+        ipcMensual:        indec.nivelGeneral.mensual,
+        ipcNivel:          indec.nivelGeneral.indice,
+        ipcNucleo:         indec.nucleo.indice,
+        ipcRegulados:      indec.regulados.indice,
+        ipcEstacional:     indec.estacional.indice,
+        ipcInteranual:     indec.nivelGeneral.interanual,
+        nucleoMensual:     indec.nucleo.mensual,
+        reguladosMensual:  indec.regulados.mensual,
+        estacionalMensual: indec.estacional.mensual,
+        ipcFuente:         "INDEC" as const,
+      }
+    : {
+        ipcMensual:        toPct(IPC_SERIES.VARIACION_MENSUAL, ipc[IPC_SERIES.VARIACION_MENSUAL]),
+        ipcNivel:          nivelDg,
+        ipcNucleo:         nucleoDg,
+        ipcRegulados:      reguladosDg,
+        ipcEstacional:     estacionalDg,
+        ipcInteranual:     variacion(nivelDg, 12),
+        nucleoMensual:     variacion(nucleoDg, 1),
+        reguladosMensual:  variacion(reguladosDg, 1),
+        estacionalMensual: variacion(estacionalDg, 1),
+        ipcFuente:         "datos.gob.ar" as const,
+      };
+
   return {
-    ipcMensual:    toPct(IPC_SERIES.VARIACION_MENSUAL, ipc[IPC_SERIES.VARIACION_MENSUAL]),
-    ipcNivel:      ipc[IPC_SERIES.NIVEL_GENERAL]           ?? [],
-    ipcNucleo:     ipc[IPC_SERIES.NUCLEO]                  ?? [],
-    ipcRegulados:  ipc[IPC_SERIES.REGULADOS]               ?? [],
-    ipcEstacional: ipc[IPC_SERIES.ESTACIONALES]            ?? [],
+    ...ipcBlock,
     remT:          toPct(EXPECTATIVAS_SERIES.REM_T, exp[EXPECTATIVAS_SERIES.REM_T]),
     remT1:         toPct(EXPECTATIVAS_SERIES.REM_T1, exp[EXPECTATIVAS_SERIES.REM_T1]),
     remT6:         toPct(EXPECTATIVAS_SERIES.REM_T6, exp[EXPECTATIVAS_SERIES.REM_T6]),

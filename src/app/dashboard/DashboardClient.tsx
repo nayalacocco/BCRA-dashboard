@@ -555,6 +555,7 @@ export function DashboardClient({
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
           <DeltaKPICard
             label="Inflación Mensual"
+            dateFormat="month"
             deltaMode="pp"
             value={latestVal(latestValues, 27)}
             suffix="%"
@@ -566,6 +567,7 @@ export function DashboardClient({
           />
           <DeltaKPICard
             label="Inflación Interanual"
+            dateFormat="month"
             deltaMode="pp"
             value={latestVal(latestValues, 28)}
             suffix="%"
@@ -577,6 +579,7 @@ export function DashboardClient({
           />
           <DeltaKPICard
             label="REM – Inflación 12m"
+            dateFormat="month"
             value={latestVal(latestValues, 29)}
             suffix="%"
             date={latestDate(latestValues, 29)}
@@ -610,6 +613,7 @@ export function DashboardClient({
           />
           <DeltaKPICard
             label="Inflación Esperada 12m"
+            dateFormat="month"
             deltaMode="pp"
             value={indecData?.inflacionEsperada.at(-1)?.valor ?? undefined}
             suffix="%"
@@ -655,6 +659,7 @@ export function DashboardClient({
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-5">
           <DeltaKPICard
             label="Exportaciones"
+            dateFormat="month"
             value={indecData?.expoTotal.at(-1)?.valor ?? undefined}
             suffix="M USD"
             date={indecData?.expoTotal.at(-1)?.fecha}
@@ -665,6 +670,7 @@ export function DashboardClient({
           />
           <DeltaKPICard
             label="Importaciones"
+            dateFormat="month"
             value={indecData?.impoTotal.at(-1)?.valor ?? undefined}
             suffix="M USD"
             date={indecData?.impoTotal.at(-1)?.fecha}
@@ -675,6 +681,7 @@ export function DashboardClient({
           />
           <DeltaKPICard
             label="Saldo Comercial"
+            dateFormat="month"
             value={indecData?.saldoComercial.at(-1)?.valor ?? undefined}
             suffix="M USD"
             date={indecData?.saldoComercial.at(-1)?.fecha}

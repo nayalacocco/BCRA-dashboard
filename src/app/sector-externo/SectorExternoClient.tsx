@@ -258,6 +258,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             positiveIsGood={true}
             showSign={true}
             decimals={0}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Exportaciones Totales"
@@ -268,6 +269,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             color="#2f9e44"
             positiveIsGood={true}
             decimals={0}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Importaciones Totales"
@@ -278,6 +280,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             color="#e03131"
             positiveIsGood={false}
             decimals={0}
+            dateFormat="month"
           />
         </div>
 
@@ -330,6 +333,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             color="#2f9e44"
             positiveIsGood={true}
             decimals={0}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Manuf. Agropecuarias (MOA)"
@@ -340,6 +344,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             color="#087f5b"
             positiveIsGood={true}
             decimals={0}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="MOI + Combustibles (calc.)"
@@ -350,6 +355,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             color="#1971c2"
             positiveIsGood={true}
             decimals={0}
+            dateFormat="month"
           />
         </div>
 
@@ -393,6 +399,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             color="#f03e3e"
             positiveIsGood={null as unknown as boolean}
             decimals={0}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Bienes Intermedios"
@@ -403,6 +410,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             color="#c92a2a"
             positiveIsGood={false}
             decimals={0}
+            dateFormat="month"
           />
         </div>
 
@@ -448,6 +456,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             positiveIsGood={true}
             showSign={true}
             decimals={0}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Servicios (neto)"
@@ -459,6 +468,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             positiveIsGood={true}
             showSign={true}
             decimals={0}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Cta. Corriente Cambiaria"
@@ -470,6 +480,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             positiveIsGood={true}
             showSign={true}
             decimals={0}
+            dateFormat="month"
           />
         </div>
 

@@ -31,6 +31,17 @@ interface DeltaKPICardProps {
    * de series mensuales de INDEC (~3 meses) + margen.
    */
   staleAfterDays?: number;
+  /** "day" (default): "Al 11/11/2026". "month": "Oct 26" — para datos mensuales, donde el día no aporta. */
+  dateFormat?: "day" | "month";
+}
+
+const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+/** "2026-10-01" | "2026-10-31" → "Oct 26" */
+function formatMonth(isoDate: string): string {
+  const [y, m] = isoDate.split("-");
+  const mi = parseInt(m, 10) - 1;
+  return mi >= 0 && mi < 12 ? `${MESES[mi]} ${y.slice(2)}` : isoDate;
 }
 
 function daysSince(isoDate: string): number {
@@ -82,6 +93,7 @@ export function DeltaKPICard({
   compact = false,
   deltaMode,
   staleAfterDays = 150,
+  dateFormat = "day",
 }: DeltaKPICardProps) {
   // Por defecto, si la unidad es un porcentaje (tasa, inflación), el delta va en pp
   const mode = deltaMode ?? (suffix.trim().startsWith("%") ? "pp" : "pct");
@@ -207,7 +219,7 @@ export function DeltaKPICard({
       {/* Date */}
       {date && (
         <p className="text-xs text-slate-400 dark:text-slate-600 mt-auto">
-          Al {formatDate(date)}
+          {dateFormat === "month" ? formatMonth(date) : `Al ${formatDate(date)}`}
         </p>
       )}
     </div>

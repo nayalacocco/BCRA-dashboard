@@ -235,8 +235,10 @@ function StatChip({ label, value }: { label: string; value: string | null }) {
 export function InflacionClient({ data }: { data: InflacionData }) {
   const [period, setPeriod] = useState<Period>("2y");
 
-  // Compute interanual from index level
-  const ipcInteranual = useMemo(() => computeInteranual(data.ipcNivel), [data.ipcNivel]);
+  // Interanual: viene directo de INDEC (o calculado del índice si se usó el respaldo)
+  const ipcInteranual = data.ipcInteranual?.length
+    ? data.ipcInteranual
+    : computeInteranual(data.ipcNivel);
 
   const f = useMemo(
     () => ({
@@ -329,6 +331,7 @@ export function InflacionClient({ data }: { data: InflacionData }) {
             color="#e03131"
             positiveIsGood={false}
             decimals={1}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Inflación Interanual"
@@ -339,26 +342,29 @@ export function InflacionClient({ data }: { data: InflacionData }) {
             color="#f76707"
             positiveIsGood={false}
             decimals={1}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Núcleo (Core)"
-            value={lastVal(data.ipcNucleo)}
-            suffix=" (índice)"
-            date={lastDate(data.ipcNucleo)}
-            delta={getDelta(data.ipcNucleo)}
+            value={lastVal(data.nucleoMensual)}
+            suffix="%"
+            date={lastDate(data.nucleoMensual)}
+            delta={getDelta(data.nucleoMensual)}
             color="#c92a2a"
             positiveIsGood={false}
             decimals={1}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Regulados"
-            value={lastVal(data.ipcRegulados)}
-            suffix=" (índice)"
-            date={lastDate(data.ipcRegulados)}
-            delta={getDelta(data.ipcRegulados)}
+            value={lastVal(data.reguladosMensual)}
+            suffix="%"
+            date={lastDate(data.reguladosMensual)}
+            delta={getDelta(data.reguladosMensual)}
             color="#d9480f"
             positiveIsGood={false}
             decimals={1}
+            dateFormat="month"
           />
         </div>
 
@@ -434,6 +440,7 @@ export function InflacionClient({ data }: { data: InflacionData }) {
             color="#e67700"
             positiveIsGood={false}
             decimals={1}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="REM — Próximo Mes"
@@ -444,6 +451,7 @@ export function InflacionClient({ data }: { data: InflacionData }) {
             color="#d9480f"
             positiveIsGood={false}
             decimals={1}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="UTDT — Expectativas 12m"
@@ -454,6 +462,7 @@ export function InflacionClient({ data }: { data: InflacionData }) {
             color="#c92a2a"
             positiveIsGood={false}
             decimals={1}
+            dateFormat="month"
           />
         </div>
 
@@ -536,6 +545,7 @@ export function InflacionClient({ data }: { data: InflacionData }) {
             color="#1c7ed6"
             positiveIsGood={false}
             decimals={2}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="BADLAR Privada"
@@ -546,6 +556,7 @@ export function InflacionClient({ data }: { data: InflacionData }) {
             color="#1971c2"
             positiveIsGood={false}
             decimals={2}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Call Interbancario"
@@ -556,6 +567,7 @@ export function InflacionClient({ data }: { data: InflacionData }) {
             color="#1864ab"
             positiveIsGood={false}
             decimals={2}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Plazo Fijo 30–59 d"
@@ -566,6 +578,7 @@ export function InflacionClient({ data }: { data: InflacionData }) {
             color="#2196f3"
             positiveIsGood={false}
             decimals={2}
+            dateFormat="month"
           />
           <DeltaKPICard
             label="Plazo Fijo +60 d"
@@ -576,6 +589,7 @@ export function InflacionClient({ data }: { data: InflacionData }) {
             color="#4dabf7"
             positiveIsGood={false}
             decimals={2}
+            dateFormat="month"
           />
         </div>
 
