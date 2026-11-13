@@ -15,11 +15,14 @@ export interface SeriesPoint {
 
 // Series IDs for the variables used in the dashboard
 export const INDEC_SERIES = {
-  // Monthly exports of cereals/agro sector (INDEC). Good proxy for "liquidación agro".
-  EXPORT_CEREALES: "162.3_XREALESLES_0_0_10",
-  // Monthly trade balance of cereals sector (INDEC).
-  BALANCE_CEREALES: "164.3_SEREALELES_0_0_11",
-  // Monthly 12-month inflation expectations — consumer survey (UTDT/Di Tella)
+  // ICA (INDEC) — exportaciones, importaciones y saldo comercial totales, mensual, M USD.
+  // Reemplazan a las series de cereales (162.3_XREALESLES / 164.3_SEREALELES), que
+  // datos.gob.ar dejó de actualizar en feb-2025.
+  EXPO_TOTAL: "74.3_IET_0_M_16",
+  IMPO_TOTAL: "74.3_IIT_0_M_25",
+  SALDO_COMERCIAL: "74.3_ISC_0_M_19",
+  // Monthly 12-month inflation expectations — consumer survey (UTDT/Di Tella).
+  // Ojo: en datos.gob.ar el último dato es ene-2026 (la tarjeta lo marca como desactualizado).
   INFLACION_ESPERADA_12M: "431.1_EXPECTATIVDIO_M_0_0_30_56",
 } as const;
 
@@ -27,8 +30,9 @@ export type IndecSeriesKey = keyof typeof INDEC_SERIES;
 export type IndecSeriesId = (typeof INDEC_SERIES)[IndecSeriesKey];
 
 export interface IndecDashboardData {
-  exportCereales: SeriesPoint[];
-  balanceCereales: SeriesPoint[];
+  expoTotal: SeriesPoint[];
+  impoTotal: SeriesPoint[];
+  saldoComercial: SeriesPoint[];
   inflacionEsperada: SeriesPoint[];
 }
 
@@ -85,20 +89,22 @@ export async function fetchINDECSeries(
  */
 export async function fetchDashboardIndecData(): Promise<IndecDashboardData> {
   const ids = [
-    INDEC_SERIES.EXPORT_CEREALES,
-    INDEC_SERIES.BALANCE_CEREALES,
+    INDEC_SERIES.EXPO_TOTAL,
+    INDEC_SERIES.IMPO_TOTAL,
+    INDEC_SERIES.SALDO_COMERCIAL,
     INDEC_SERIES.INFLACION_ESPERADA_12M,
   ];
 
   try {
     const data = await fetchINDECSeries(ids, 300);
     return {
-      exportCereales:    data[INDEC_SERIES.EXPORT_CEREALES]    ?? [],
-      balanceCereales:   data[INDEC_SERIES.BALANCE_CEREALES]   ?? [],
+      expoTotal:         data[INDEC_SERIES.EXPO_TOTAL]         ?? [],
+      impoTotal:         data[INDEC_SERIES.IMPO_TOTAL]         ?? [],
+      saldoComercial:    data[INDEC_SERIES.SALDO_COMERCIAL]    ?? [],
       inflacionEsperada: data[INDEC_SERIES.INFLACION_ESPERADA_12M] ?? [],
     };
   } catch (err) {
     console.error("[INDEC] fetchDashboardIndecData failed:", err);
-    return { exportCereales: [], balanceCereales: [], inflacionEsperada: [] };
+    return { expoTotal: [], impoTotal: [], saldoComercial: [], inflacionEsperada: [] };
   }
 }

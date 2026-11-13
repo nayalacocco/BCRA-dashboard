@@ -4,6 +4,7 @@
  */
 
 import { fetchINDECSeries, type SeriesPoint } from "./client";
+import { getVariableHistorico } from "@/lib/bcra/client";
 
 export type { SeriesPoint };
 
@@ -30,10 +31,50 @@ export const EXPECTATIVAS_SERIES = {
 export const TASAS_SERIES = {
   POLITICA_MON: "89.1_IR_BCRARIA_0_M_34",  // Tasa de Política Monetaria mensual
   BADLAR:        "89.1_TIB_0_0_20",          // BADLAR privada mensual
-  CALL:          "89.1_TIC_0_0_18",           // Call interbancario mensual
   PF_30_59:      "89.1_TIPF35D_0_0_35",      // Plazo fijo 30–59 días
   PF_60_MAS:     "89.1_TIPFM6D_0_0_36",      // Plazo fijo +60 días
 } as const;
+
+/**
+ * Series que datos.gob.ar publica como FRACCIÓN (0,0166 = 1,66%), no en porcentaje.
+ * Verificado nov-2026: IPC var. mensual (units "Variación intermensual") y todas las del REM.
+ * Sin esta conversión la página mostraba "0,0 %" y la tasa real (BADLAR/12 − IPC) salía ~2 pp de más.
+ */
+const FRACTION_SERIES = new Set<string>([
+  IPC_SERIES.VARIACION_MENSUAL,
+  EXPECTATIVAS_SERIES.REM_T,
+  EXPECTATIVAS_SERIES.REM_T1,
+  EXPECTATIVAS_SERIES.REM_T6,
+  EXPECTATIVAS_SERIES.REM_ANUAL_25,
+  EXPECTATIVAS_SERIES.REM_ANUAL_26,
+]);
+
+function toPct(id: string, pts: SeriesPoint[] | undefined): SeriesPoint[] {
+  if (!pts) return [];
+  return FRACTION_SERIES.has(id) ? pts.map((p) => ({ ...p, valor: p.valor * 100 })) : pts;
+}
+
+/** ID BCRA API v4 — "Interbank Loans in Pesos - Interest Rate" (call, diaria, % n.a.) */
+const BCRA_CALL_ID = 148;
+
+/**
+ * Call interbancario: la serie de datos.gob.ar (89.1_TIC_0_0_18) no publica desde abr-2023.
+ * Se toma la diaria del BCRA y se promedia por mes para alinearla con las demás tasas mensuales.
+ */
+async function fetchCallMensual(): Promise<SeriesPoint[]> {
+  const { data } = await getVariableHistorico(BCRA_CALL_ID, { limit: 3000 });
+  const byMonth = new Map<string, { sum: number; n: number }>();
+  for (const d of data.detalle ?? []) {
+    const key = d.fecha.slice(0, 7) + "-01";
+    const acc = byMonth.get(key) ?? { sum: 0, n: 0 };
+    acc.sum += d.valor;
+    acc.n += 1;
+    byMonth.set(key, acc);
+  }
+  return [...byMonth.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([fecha, { sum, n }]) => ({ fecha, valor: sum / n }));
+}
 
 export interface InflacionData {
   // IPC
@@ -62,10 +103,11 @@ export async function fetchInflacionData(): Promise<InflacionData> {
   const expIds  = Object.values(EXPECTATIVAS_SERIES);
   const tasIds  = Object.values(TASAS_SERIES);
 
-  const [ipcRes, expRes, tasRes] = await Promise.allSettled([
+  const [ipcRes, expRes, tasRes, callRes] = await Promise.allSettled([
     fetchINDECSeries(ipcIds, 500),
     fetchINDECSeries(expIds, 300),
     fetchINDECSeries(tasIds, 400),
+    fetchCallMensual(),
   ]);
 
   const ipc = ipcRes.status === "fulfilled" ? ipcRes.value : {};
@@ -75,22 +117,23 @@ export async function fetchInflacionData(): Promise<InflacionData> {
   if (ipcRes.status === "rejected") console.error("[Inflacion] IPC fetch failed:", ipcRes.reason);
   if (expRes.status === "rejected") console.error("[Inflacion] Expectativas fetch failed:", expRes.reason);
   if (tasRes.status === "rejected") console.error("[Inflacion] Tasas fetch failed:", tasRes.reason);
+  if (callRes.status === "rejected") console.error("[Inflacion] Call (BCRA) fetch failed:", callRes.reason);
 
   return {
-    ipcMensual:    ipc[IPC_SERIES.VARIACION_MENSUAL]       ?? [],
+    ipcMensual:    toPct(IPC_SERIES.VARIACION_MENSUAL, ipc[IPC_SERIES.VARIACION_MENSUAL]),
     ipcNivel:      ipc[IPC_SERIES.NIVEL_GENERAL]           ?? [],
     ipcNucleo:     ipc[IPC_SERIES.NUCLEO]                  ?? [],
     ipcRegulados:  ipc[IPC_SERIES.REGULADOS]               ?? [],
     ipcEstacional: ipc[IPC_SERIES.ESTACIONALES]            ?? [],
-    remT:          exp[EXPECTATIVAS_SERIES.REM_T]          ?? [],
-    remT1:         exp[EXPECTATIVAS_SERIES.REM_T1]         ?? [],
-    remT6:         exp[EXPECTATIVAS_SERIES.REM_T6]         ?? [],
-    remAnual25:    exp[EXPECTATIVAS_SERIES.REM_ANUAL_25]   ?? [],
-    remAnual26:    exp[EXPECTATIVAS_SERIES.REM_ANUAL_26]   ?? [],
+    remT:          toPct(EXPECTATIVAS_SERIES.REM_T, exp[EXPECTATIVAS_SERIES.REM_T]),
+    remT1:         toPct(EXPECTATIVAS_SERIES.REM_T1, exp[EXPECTATIVAS_SERIES.REM_T1]),
+    remT6:         toPct(EXPECTATIVAS_SERIES.REM_T6, exp[EXPECTATIVAS_SERIES.REM_T6]),
+    remAnual25:    toPct(EXPECTATIVAS_SERIES.REM_ANUAL_25, exp[EXPECTATIVAS_SERIES.REM_ANUAL_25]),
+    remAnual26:    toPct(EXPECTATIVAS_SERIES.REM_ANUAL_26, exp[EXPECTATIVAS_SERIES.REM_ANUAL_26]),
     utdt12m:       exp[EXPECTATIVAS_SERIES.UTDT_12M]       ?? [],
     politicaMon:   tas[TASAS_SERIES.POLITICA_MON]          ?? [],
     badlar:        tas[TASAS_SERIES.BADLAR]                 ?? [],
-    call:          tas[TASAS_SERIES.CALL]                   ?? [],
+    call:          callRes.status === "fulfilled" ? callRes.value : [],
     pf30:          tas[TASAS_SERIES.PF_30_59]              ?? [],
     pf60:          tas[TASAS_SERIES.PF_60_MAS]             ?? [],
   };

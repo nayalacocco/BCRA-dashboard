@@ -24,6 +24,19 @@ interface DeltaKPICardProps {
    * (una variación % de una tasa, ej. 1,7%→1,9% = "+11,76%", es engañosa).
    */
   deltaMode?: "pct" | "pp";
+  /**
+   * Si la fecha del dato es más vieja que esto (días), la tarjeta se marca como
+   * desactualizada. Atrapa series discontinuadas en la fuente (ej. datos.gob.ar
+   * mantiene IDs vivos pero sin datos nuevos). Default 150 días ≈ rezago normal
+   * de series mensuales de INDEC (~3 meses) + margen.
+   */
+  staleAfterDays?: number;
+}
+
+function daysSince(isoDate: string): number {
+  const t = new Date(isoDate + "T12:00:00Z").getTime();
+  if (isNaN(t)) return 0;
+  return Math.floor((Date.now() - t) / 86_400_000);
 }
 
 function formatCompact(value: number, decimals: number): { display: string; scale: string } {
@@ -67,8 +80,12 @@ export function DeltaKPICard({
   positiveIsGood = true,
   showSign = false,
   compact = false,
-  deltaMode = "pct",
+  deltaMode,
+  staleAfterDays = 150,
 }: DeltaKPICardProps) {
+  // Por defecto, si la unidad es un porcentaje (tasa, inflación), el delta va en pp
+  const mode = deltaMode ?? (suffix.trim().startsWith("%") ? "pp" : "pct");
+  const isStale = value != null && !!date && daysSince(date) > staleAfterDays;
   // Format main value
   let displayValue = "—";
   let scaleLabel = "";
@@ -126,11 +143,11 @@ export function DeltaKPICard({
           maximumFractionDigits: d,
         });
     }
-    if (deltaMode === "pp") absFormatted += " pp";
+    if (mode === "pp") absFormatted += " pp";
   }
 
   const pctFormatted =
-    deltaMode === "pct" && hasPctDelta && delta!.pct != null
+    mode === "pct" && hasPctDelta && delta!.pct != null
       ? Math.abs(delta!.pct).toLocaleString("es-AR", {
           minimumFractionDigits: 2,
           maximumFractionDigits: 2,
@@ -140,9 +157,19 @@ export function DeltaKPICard({
   return (
     <div className="card card-dark p-4 flex flex-col gap-2 hover:shadow-md transition-shadow">
       {/* Label */}
-      <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide leading-tight">
-        {label}
-      </p>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide leading-tight">
+          {label}
+        </p>
+        {isStale && (
+          <span
+            className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400"
+            title="La fuente dejó de publicar esta serie o tiene un rezago anormal"
+          >
+            ⚠ desactualizado
+          </span>
+        )}
+      </div>
 
       {/* Main value */}
       <div className="flex items-baseline gap-1 flex-wrap">
@@ -152,8 +179,8 @@ export function DeltaKPICard({
           </span>
         )}
         <span
-          className="font-mono text-xl font-bold tracking-tight leading-none"
-          style={{ color }}
+          className={`font-mono text-xl font-bold tracking-tight leading-none ${isStale ? "text-slate-400 dark:text-slate-500" : ""}`}
+          style={{ color: isStale ? undefined : color }}
         >
           {displayValue}
           {scaleLabel && (

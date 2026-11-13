@@ -181,9 +181,9 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
       saldoComercial:   filterByPeriod(data.saldoComercial, period),
       expoPP:           filterByPeriod(data.expoPP, period),
       expoMOA:          filterByPeriod(data.expoMOA, period),
-      expoMOI:          filterByPeriod(data.expoMOI, period),
+      expoResto:          filterByPeriod(data.expoResto, period),
       impoBienesCap:    filterByPeriod(data.impoBienesCap, period),
-      impoCombustibles: filterByPeriod(data.impoCombustibles, period),
+      impoIntermedios: filterByPeriod(data.impoIntermedios, period),
       ctaCteTotal:      filterByPeriod(data.ctaCteTotal, period),
       bienes:           filterByPeriod(data.bienes, period),
       servicios:        filterByPeriod(data.servicios, period),
@@ -195,12 +195,12 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
   const expoLast = lastVal(data.expoTotal);
   const sharePP  = expoLast ? ((lastVal(data.expoPP)  ?? 0) / expoLast) * 100 : null;
   const shareMOA = expoLast ? ((lastVal(data.expoMOA) ?? 0) / expoLast) * 100 : null;
-  const shareMOI = expoLast ? ((lastVal(data.expoMOI) ?? 0) / expoLast) * 100 : null;
+  const shareResto = expoLast ? ((lastVal(data.expoResto) ?? 0) / expoLast) * 100 : null;
 
   // Import share calculations
   const impoLast = lastVal(data.impoTotal);
   const shareBC  = impoLast ? ((lastVal(data.impoBienesCap)    ?? 0) / impoLast) * 100 : null;
-  const shareComb = impoLast ? ((lastVal(data.impoCombustibles) ?? 0) / impoLast) * 100 : null;
+  const shareInt = impoLast ? ((lastVal(data.impoIntermedios) ?? 0) / impoLast) * 100 : null;
 
   // Date tags
   const icaDate = lastDate(data.expoTotal);
@@ -342,11 +342,11 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             decimals={0}
           />
           <DeltaKPICard
-            label="Manuf. Industriales (MOI)"
-            value={lastVal(data.expoMOI)}
+            label="MOI + Combustibles (calc.)"
+            value={lastVal(data.expoResto)}
             suffix="M USD"
-            date={lastDate(data.expoMOI)}
-            delta={getDelta(data.expoMOI)}
+            date={lastDate(data.expoResto)}
+            delta={getDelta(data.expoResto)}
             color="#1971c2"
             positiveIsGood={true}
             decimals={0}
@@ -357,7 +357,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
         <div className="flex flex-wrap gap-2 mb-5">
           <ShareChip label="de expo total" share={sharePP} />
           <ShareChip label="de expo total" share={shareMOA} />
-          <ShareChip label="de expo total" share={shareMOI} />
+          <ShareChip label="de expo total" share={shareResto} />
         </div>
 
         <div className="card card-dark p-5">
@@ -371,7 +371,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             series={[
               { key: "pp",  label: "Prod. Primarios (PP)",   data: f.expoPP,  color: "#2f9e44" },
               { key: "moa", label: "Manuf. Agrop. (MOA)",    data: f.expoMOA, color: "#087f5b" },
-              { key: "moi", label: "Manuf. Industrial (MOI)", data: f.expoMOI, color: "#1971c2" },
+              { key: "moi", label: "MOI + Comb. (calc.)", data: f.expoResto, color: "#1971c2" },
             ]}
             height={240}
             unit="M USD"
@@ -395,11 +395,11 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
             decimals={0}
           />
           <DeltaKPICard
-            label="Combustibles y Lubricantes"
-            value={lastVal(data.impoCombustibles)}
+            label="Bienes Intermedios"
+            value={lastVal(data.impoIntermedios)}
             suffix="M USD"
-            date={lastDate(data.impoCombustibles)}
-            delta={getDelta(data.impoCombustibles)}
+            date={lastDate(data.impoIntermedios)}
+            delta={getDelta(data.impoIntermedios)}
             color="#c92a2a"
             positiveIsGood={false}
             decimals={0}
@@ -409,7 +409,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
         {/* Share chips */}
         <div className="flex flex-wrap gap-2 mb-5">
           <ShareChip label="de impo total" share={shareBC} />
-          <ShareChip label="de impo total" share={shareComb} />
+          <ShareChip label="de impo total" share={shareInt} />
         </div>
 
         <div className="card card-dark p-5">
@@ -422,7 +422,7 @@ export function SectorExternoClient({ data }: { data: SectorExternoData }) {
           <MultiSeriesChart
             series={[
               { key: "bc",   label: "Bienes de Capital + Partes", data: f.impoBienesCap,    color: "#f03e3e" },
-              { key: "comb", label: "Combustibles",               data: f.impoCombustibles, color: "#c92a2a" },
+              { key: "interm", label: "Bienes Intermedios",         data: f.impoIntermedios, color: "#c92a2a" },
             ]}
             height={220}
             unit="M USD"

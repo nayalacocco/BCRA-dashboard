@@ -253,8 +253,7 @@ export function DashboardClient({
 
   // Filter INDEC data by period
   const filteredIndec = useMemo(() => ({
-    exportCereales: filterByPeriod(indecData?.exportCereales ?? [], period),
-    balanceCereales: filterByPeriod(indecData?.balanceCereales ?? [], period),
+    saldoComercial: filterByPeriod(indecData?.saldoComercial ?? [], period),
     inflacionEsperada: filterByPeriod(indecData?.inflacionEsperada ?? [], period),
   }), [indecData, period]);
 
@@ -655,49 +654,53 @@ export function DashboardClient({
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-5">
           <DeltaKPICard
-            label="Exportaciones Cereales"
-            value={indecData?.exportCereales.at(-1)?.valor ?? undefined}
+            label="Exportaciones"
+            value={indecData?.expoTotal.at(-1)?.valor ?? undefined}
             suffix="M USD"
-            date={indecData?.exportCereales.at(-1)?.fecha}
-            delta={getDelta(indecData?.exportCereales ?? [])}
+            date={indecData?.expoTotal.at(-1)?.fecha}
+            delta={getDelta(indecData?.expoTotal ?? [])}
             color="#2f9e44"
             positiveIsGood={true}
-            decimals={1}
-          />
-          <PendingCard
-            label="Importaciones"
-            description="Pagos de importaciones al exterior"
-            source="INDEC"
-            unit="M USD"
+            decimals={0}
           />
           <DeltaKPICard
-            label="Balance Comercial Agro"
-            value={indecData?.balanceCereales.at(-1)?.valor ?? undefined}
+            label="Importaciones"
+            value={indecData?.impoTotal.at(-1)?.valor ?? undefined}
             suffix="M USD"
-            date={indecData?.balanceCereales.at(-1)?.fecha}
-            delta={getDelta(indecData?.balanceCereales ?? [])}
+            date={indecData?.impoTotal.at(-1)?.fecha}
+            delta={getDelta(indecData?.impoTotal ?? [])}
+            color="#e8590c"
+            positiveIsGood={false}
+            decimals={0}
+          />
+          <DeltaKPICard
+            label="Saldo Comercial"
+            value={indecData?.saldoComercial.at(-1)?.valor ?? undefined}
+            suffix="M USD"
+            date={indecData?.saldoComercial.at(-1)?.fecha}
+            delta={getDelta(indecData?.saldoComercial ?? [])}
             color="#087f5b"
             positiveIsGood={true}
             showSign={true}
-            decimals={1}
+            decimals={0}
           />
         </div>
 
-        {/* Exportaciones chart */}
+        {/* Saldo comercial chart */}
         <div className="card card-dark p-5">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="font-semibold text-slate-900 dark:text-slate-100">
-                Exportaciones de Cereales
+                Saldo Comercial
               </h3>
-              <p className="text-xs text-slate-400 mt-0.5">Fuente: INDEC (datos.gob.ar)</p>
+              <p className="text-xs text-slate-400 mt-0.5">Fuente: INDEC — ICA (datos.gob.ar)</p>
             </div>
             <span className="text-xs text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
               M USD
             </span>
           </div>
           <HistoricalChart
-            data={filteredIndec.exportCereales}
+            data={filteredIndec.saldoComercial}
             color="#2f9e44"
             unit="M USD"
             height={220}
@@ -710,9 +713,10 @@ export function DashboardClient({
         <p>
           <span className="font-semibold text-slate-700 dark:text-slate-300">Fuentes:</span>{" "}
           API oficial del BCRA v4.0 · INDEC vía datos.gob.ar · UTDT (Di Tella) vía datos.gob.ar.
-          Datos con caché ISR de 30 min.{" "}
+          Página regenerada cada 30 min; datos de las fuentes cacheados hasta 1 h. Las tarjetas marcadas
+          &quot;desactualizado&quot; muestran series que la fuente dejó de publicar.{" "}
           <span className="text-amber-600 dark:text-amber-500">⚠ Pendiente</span>{" "}
-          indica variables de fuentes externas (ByMA, ROFEX, CIARA) aún no integradas.
+          indica variables de fuentes externas (ByMA, ROFEX) aún no integradas.
         </p>
       </div>
     </div>
