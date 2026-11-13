@@ -20,7 +20,7 @@ import {
   filterByPeriod,
   type Period,
 } from "@/components/dashboard/PeriodSelector";
-import { TASAS_BCRA, type InflacionData, type SeriesPoint, type TasaKey } from "@/lib/indec/inflacion";
+import { TASAS_BCRA, type InflacionData, type SeriesPoint, type TasaKey } from "@/lib/indec/inflacion-shared";
 
 // ---- Helpers ----
 
