@@ -92,7 +92,8 @@ def exportar(data_dir: Path) -> dict:
                     "rho": _lista(m["rho"], 3),
                     "rho6": _lista(m["rho6"], 3),
                     "rho12": _lista(m["rho12"], 3),
-                    "regimen": {"D3": _lista(reg["D3"], 1), "excesoC3": _lista(reg["excesoC3"], 1), "codigo": reg["codigo"]},
+                    "regimen": {"D3": _lista(reg["D3"], 1), "excesoC3": _lista(reg["excesoC3"], 1),
+                                "amplitud": reg["amplitud"], "dinamica": reg["dinamica"], "codigo": reg["codigo"]},
                 }
                 # Heatmap: r en puntos log ×100, ponderado (el r no depende de la ponderación)
                 if pkey == "pond" and ukey in ("todos", "nacional27"):
@@ -122,6 +123,8 @@ def exportar(data_dir: Path) -> dict:
         "universos": {k: {"descripcion": v, "n": n_univ[k]} for k, v in UNIVERSOS.items()},
         "headline": {k: _lista(((h / h.shift(1) - 1) * 100).iloc[1:], 3) for k, h in headline.items()},
         "regimenes": dif.REGIMENES,
+        "amplitud_etiquetas": dif.AMPLITUD,
+        "dinamica_etiquetas": dif.DINAMICA,
         "parametros": {
             "umbral_D_concentrada": dif.UMBRAL_D_CONCENTRADA,
             "umbral_D_generalizada": dif.UMBRAL_D_GENERALIZADA,

@@ -204,30 +204,63 @@ REGIMENES = {
 }
 
 
-def clasificar(d3: float, vr3: float, exceso_c3: float, banda: tuple[float, float]) -> str:
-    """
-    d3: promedio de 3 meses de D_t. vr3: VR_t(3). exceso_c3: C_t(3) − C*_t(3). banda: (p5, p95) de VR(3)
-    bajo independencia temporal.
+AMPLITUD = {
+    "concentrada": "Concentrada: pocos rubros por encima del promedio",
+    "intermedia": "Intermedia",
+    "generalizada": "Generalizada: cerca de la mitad de la canasta por encima del promedio",
+}
+DINAMICA = {
+    "rotacion": "Rotación: los precios relativos revierten (los rubros se turnan)",
+    "ruido": "Sin patrón distinguible del ruido",
+    "persistencia": "Persistencia: los mismos rubros siguen liderando",
+}
 
-    Rotación     ⇔ VR(3) < p5   o  (VR(3) < 1 y exceso_c3 > 0)
-    Persistencia ⇔ VR(3) > p95  o  (VR(3) > 1 y exceso_c3 < 0)
+
+def componentes(d3: float, vr3: float, exceso_c3: float, banda: tuple[float, float]) -> tuple[str | None, str | None]:
+    """
+    Amplitud (sobre D̄, promedio de 3 meses de D_t):
+        concentrada  ⇔ D̄ < 40 %      generalizada ⇔ D̄ ≥ 45 %      intermedia en el medio
+    Dinámica (sobre VR(3), su banda de referencia [p5, p95] y el exceso de rotación C(3) − C*(3)):
+        rotación     ⇔ VR(3) < p5   o  (VR(3) < 1 y C(3) > C*(3))
+        persistencia ⇔ VR(3) > p95  o  (VR(3) > 1 y C(3) < C*(3))
+        ruido en otro caso
     (VR manda cuando sale de la banda; adentro de la banda se exige que C(3) confirme el signo.)
     """
     if any(np.isnan(x) for x in (d3, vr3, exceso_c3, *banda)):
-        return "intermedia"
+        return None, None
+    amp = "generalizada" if d3 >= UMBRAL_D_GENERALIZADA else "concentrada" if d3 < UMBRAL_D_CONCENTRADA else "intermedia"
     lo, hi = banda
-    rot = vr3 < lo or (vr3 < 1 and exceso_c3 > 0)
-    per = vr3 > hi or (vr3 > 1 and exceso_c3 < 0)
-    if d3 >= UMBRAL_D_GENERALIZADA:
-        return "generalizada_escalonada" if rot else "generalizada_persistente" if per else "intermedia"
-    if d3 < UMBRAL_D_CONCENTRADA:
-        return "concentrada_persistente" if per else "concentrada_transitoria" if rot else "intermedia"
-    return "intermedia"
+    if vr3 < lo or (vr3 < 1 and exceso_c3 > 0):
+        din = "rotacion"
+    elif vr3 > hi or (vr3 > 1 and exceso_c3 < 0):
+        din = "persistencia"
+    else:
+        din = "ruido"
+    return amp, din
+
+
+_TABLA = {
+    ("generalizada", "rotacion"): "generalizada_escalonada",
+    ("generalizada", "persistencia"): "generalizada_persistente",
+    ("concentrada", "persistencia"): "concentrada_persistente",
+    ("concentrada", "rotacion"): "concentrada_transitoria",
+}
+
+
+def clasificar(d3: float, vr3: float, exceso_c3: float, banda: tuple[float, float]) -> str:
+    """Régimen = combinación de amplitud y dinámica (ver `componentes`); el resto es "intermedia"."""
+    return _TABLA.get(componentes(d3, vr3, exceso_c3, banda), "intermedia")
 
 
 def regimen(m: dict) -> dict:
     D = pd.Series(m["D"])
     d3 = D.rolling(3, min_periods=3).mean().values
     exc = m["C"][3] - m["Cref"][3]
-    codigo = [clasificar(d3[t], m["VR"][3][t], exc[t], m["VRbanda"][3]) for t in range(len(D))]
-    return {"D3": d3, "excesoC3": exc, "codigo": codigo}
+    comp = [componentes(d3[t], m["VR"][3][t], exc[t], m["VRbanda"][3]) for t in range(len(D))]
+    return {
+        "D3": d3,
+        "excesoC3": exc,
+        "amplitud": [c[0] for c in comp],
+        "dinamica": [c[1] for c in comp],
+        "codigo": [_TABLA.get(c, "intermedia") for c in comp],
+    }
