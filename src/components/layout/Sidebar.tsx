@@ -1,122 +1,155 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ThemeToggle } from "@/components/theme/ThemeToggle";
+import { ThemeSwitch } from "@/components/ds/ThemeSwitch";
 
-const navLinks = [
-  { href: "/dashboard",      label: "Dashboard" },
-  { href: "/sector-externo", label: "Sector Externo" },
-  { href: "/inflacion",      label: "Inflación" },
-  { href: "/inflacion/difusion", label: "  ↳ Difusión y rotación" },
-  { href: "/mercado",        label: "Mercado" },
-  { href: "/mercado/fx",     label: "  ↳ FX — Series" },
-  { href: "/historico",      label: "Histórico" },
-  { href: "/series",         label: "Comparador" },
-  { href: "/on-list",        label: "ONs — Lista completa" },
+/**
+ * Sidebar del sistema de diseño v5: fija a la izquierda en escritorio, panel deslizable en móvil.
+ * Título "Argentina" con filete celeste–blanco–celeste, grupos en versalitas chicas e ítem activo
+ * con barra celeste a la izquierda.
+ */
+
+interface NavItem {
+  href: string;
+  label: string;
+  sub?: boolean;
+}
+
+const NAV: { grupo: string; items: NavItem[] }[] = [
+  { grupo: "Resumen", items: [{ href: "/dashboard", label: "Dashboard" }] },
+  {
+    grupo: "Fundamentos",
+    items: [
+      { href: "/inflacion", label: "Inflación" },
+      { href: "/inflacion/difusion", label: "Difusión y rotación", sub: true },
+      { href: "/sector-externo", label: "Sector externo" },
+    ],
+  },
+  {
+    grupo: "Mercados",
+    items: [
+      { href: "/mercado", label: "Mercado" },
+      { href: "/mercado/fx", label: "Tipo de cambio", sub: true },
+      { href: "/on-list", label: "ONs" },
+    ],
+  },
+  {
+    grupo: "Herramientas",
+    items: [
+      { href: "/historico", label: "Histórico" },
+      { href: "/series", label: "Comparador" },
+    ],
+  },
 ];
 
-export function Sidebar() {
-  const [open, setOpen] = useState(false);
-  const pathname = usePathname();
-  const panelRef = useRef<HTMLDivElement>(null);
+const TODOS = NAV.flatMap((g) => g.items.map((i) => i.href));
 
-  // Close panel on navigation
-  useEffect(() => { setOpen(false); }, [pathname]);
+/** Activo = la ruta más específica que coincide (para que /inflacion no quede activo en /inflacion/difusion). */
+function activo(pathname: string): string | undefined {
+  return TODOS.filter((h) => pathname === h || pathname.startsWith(h + "/")).sort((a, b) => b.length - a.length)[0];
+}
 
-  // Close on click outside the panel
-  useEffect(() => {
-    if (!open) return;
-    function handleClick(e: MouseEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [open]);
-
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return;
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, [open]);
-
+function Brand() {
   return (
-    <>
-      {/* ── Top bar ──────────────────────────────────────────── */}
-      <header className="sticky top-0 z-50 h-14 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm flex items-center px-4 gap-3">
-        {/* Arg toggle */}
-        <button
-          onClick={() => setOpen((v) => !v)}
-          aria-label={open ? "Cerrar menú" : "Abrir menú"}
-          className="w-9 h-9 rounded-lg bg-blue-600 hover:bg-blue-700 active:scale-95 flex items-center justify-center transition-all flex-shrink-0"
-        >
-          <span className="text-white font-bold text-[11px] tracking-tight leading-none">
-            Arg
-          </span>
-        </button>
+    <div className="px-6 pb-5 border-b border-ds-rule mb-3">
+      <p className="font-serif text-[18px] font-semibold text-ds-head tracking-[0.01em]">Argentina</p>
+      <div className="flex w-[54px] h-[3px] my-2.5" aria-hidden>
+        <i className="flex-1 bg-ds-celeste" />
+        <i className="flex-1 bg-white border-y border-ds-rule" />
+        <i className="flex-1 bg-ds-celeste" />
+      </div>
+      <p className="text-[11px] uppercase tracking-[0.12em] text-ds-muted">Monitor macro y de valuación</p>
+    </div>
+  );
+}
 
-        {/* Title */}
-        <span className="font-bold text-slate-900 dark:text-slate-100 text-base hidden sm:block select-none">
-          Argentina Dashboard
-        </span>
-
-        {/* Right side */}
-        <div className="ml-auto flex items-center gap-2">
-          <span className="hidden md:block text-xs text-slate-400 bg-slate-100 dark:bg-slate-800 dark:text-slate-500 px-2 py-1 rounded-md font-mono">
-            API v4.0
-          </span>
-          <ThemeToggle />
-        </div>
-      </header>
-
-      {/* ── Backdrop ─────────────────────────────────────────── */}
-      <div
-        aria-hidden="true"
-        className={`fixed inset-0 z-40 bg-black/20 transition-opacity duration-200 ${
-          open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
-        }`}
-        onClick={() => setOpen(false)}
-      />
-
-      {/* ── Slide-out panel ──────────────────────────────────── */}
-      <div
-        ref={panelRef}
-        className={`fixed left-0 top-14 z-50 h-[calc(100vh-3.5rem)] w-52 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 shadow-xl flex flex-col transition-transform duration-200 ${
-          open ? "translate-x-0" : "-translate-x-full"
-        }`}
-      >
-        {/* Nav links */}
-        <nav className="flex-1 py-3 px-2 flex flex-col gap-0.5 overflow-y-auto">
-          {navLinks.map((link) => {
-            const isActive = pathname === link.href || pathname.startsWith(link.href + "/");
+function Nav({ pathname }: { pathname: string }) {
+  const on = activo(pathname);
+  return (
+    <nav className="flex-1 overflow-y-auto">
+      {NAV.map((g) => (
+        <div key={g.grupo}>
+          <p className="smallcaps text-ds-muted mx-6 mt-5 mb-1.5">{g.grupo}</p>
+          {g.items.map((it) => {
+            const isOn = it.href === on;
             return (
               <Link
-                key={link.href}
-                href={link.href}
-                className={`px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                  isActive
-                    ? "bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400"
-                    : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100"
+                key={it.href}
+                href={it.href}
+                aria-current={isOn ? "page" : undefined}
+                className={`block py-[5px] pr-6 border-l-[3px] text-[13.5px] transition-colors ${it.sub ? "pl-[33px]" : "pl-[21px]"} ${
+                  isOn
+                    ? "border-ds-celeste text-ds-head font-semibold bg-ds-soft"
+                    : "border-transparent text-ds-text-2 hover:text-ds-head"
                 }`}
               >
-                {link.label}
+                {it.label}
               </Link>
             );
           })}
-        </nav>
-
-        {/* Bottom */}
-        <div className="p-3 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-400 text-center">
-          Argentina Dashboard
         </div>
+      ))}
+    </nav>
+  );
+}
+
+export function Sidebar() {
+  const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => setOpen(false), [pathname]);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  const panel = (
+    <>
+      <Brand />
+      <Nav pathname={pathname} />
+      <div className="px-6 pt-4 pb-2 border-t border-ds-rule mt-4">
+        <ThemeSwitch />
       </div>
+    </>
+  );
+
+  return (
+    <>
+      {/* Escritorio */}
+      <aside className="hidden lg:flex flex-col sticky top-0 h-screen w-[232px] shrink-0 bg-ds-sidebar border-r border-ds-rule py-7">
+        {panel}
+      </aside>
+
+      {/* Móvil: barra superior + panel */}
+      <div className="lg:hidden sticky top-0 z-40 h-12 bg-ds-sidebar border-b border-ds-rule flex items-center gap-3 px-4">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          aria-label={open ? "Cerrar menú" : "Abrir menú"}
+          aria-expanded={open}
+          className="w-8 h-8 flex flex-col items-center justify-center gap-[3px] rounded-md hover:bg-ds-soft"
+        >
+          <i className="block w-4 h-[1.5px] bg-ds-head" />
+          <i className="block w-4 h-[1.5px] bg-ds-head" />
+          <i className="block w-4 h-[1.5px] bg-ds-head" />
+        </button>
+        <span className="font-serif font-semibold text-ds-head">Argentina</span>
+      </div>
+      <div
+        aria-hidden
+        onClick={() => setOpen(false)}
+        className={`lg:hidden fixed inset-0 z-40 bg-black/30 transition-opacity ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+      />
+      <aside
+        className={`lg:hidden fixed left-0 top-0 z-50 h-screen w-[260px] bg-ds-sidebar border-r border-ds-rule py-7 flex flex-col transition-transform duration-200 ${
+          open ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        {panel}
+      </aside>
     </>
   );
 }

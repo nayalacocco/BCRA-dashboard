@@ -1,0 +1,15 @@
+{
+  "fuente": "INDEC, Calendario de difusión (https://www.indec.gob.ar/indec/web/Calendario-Fecha-0)",
+  "verificado": "2026-11-13",
+  "nota": "Fechas de publicación del IPC Cobertura nacional, 16:00 ART. Se cargan a mano desde el calendario oficial; si la última fecha ya pasó, la web muestra «sin dato».",
+  "publicaciones": [
+    { "periodo": "2026-10", "fecha": "2026-11-12", "hora": "16:00" },
+    { "periodo": "2026-11", "fecha": "2026-12-15", "hora": "16:00" },
+    { "periodo": "2026-12", "fecha": "2027-01-14", "hora": "16:00" },
+    { "periodo": "2027-01", "fecha": "2027-02-12", "hora": "16:00" },
+    { "periodo": "2027-02", "fecha": "2027-03-12", "hora": "16:00" },
+    { "periodo": "2027-03", "fecha": "2027-04-15", "hora": "16:00" },
+    { "periodo": "2027-04", "fecha": "2027-05-13", "hora": "16:00" },
+    { "periodo": "2027-05", "fecha": "2027-06-11", "hora": "16:00" }
+  ]
+}
