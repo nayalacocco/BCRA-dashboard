@@ -551,7 +551,8 @@ function DistanciasTabla({ c }: { c: CotizacionesData }) {
         En % y en meses, si el oficial y los límites siguen al ritmo de los últimos {b.ventana_dias} días (oficial {fmtSigno(b.ritmo_oficial_3m, 2)} %
         mensual).
       </p>
-      <table className="w-full border-collapse text-[13px] max-w-[820px]">
+      <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-[13px] max-w-[820px] min-w-[600px]">
         <thead>
           <tr>
             {["Límite", "Nivel", "Distancia", "Ritmo mensual del límite", "Tiempo hasta tocarlo"].map((h, i) => (
@@ -573,6 +574,7 @@ function DistanciasTabla({ c }: { c: CotizacionesData }) {
           ))}
         </tbody>
       </table>
+      </div>
       <p className="text-[11.5px] text-ds-muted mt-1.5">
         Es una extrapolación mecánica, no una proyección: el ritmo futuro de la banda depende de la inflación que publique el
         INDEC (T-2) y el del oficial, del mercado.

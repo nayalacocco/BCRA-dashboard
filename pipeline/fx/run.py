@@ -152,37 +152,25 @@ def acumulado_fmi(fecha: str, cache: dict[str, float]) -> float:
 
 
 def escalones_fmi() -> list[dict]:
-    """Ubica la fecha exacta de cada compra/recompra con el FMI por bisección sobre la fecha de corte
-    de 'Transactions with the Fund' (acumulado anual a una fecha)."""
+    """Compras netas acumuladas al FMI desde el inicio del programa, por fin de mes.
+    'Transactions with the Fund' recorta la fecha de corte al último fin de mes cerrado: la fuente es
+    mensual, así que cada operación queda fechada al cierre del mes en que ocurrió."""
     cache: dict[str, float] = {}
     base = acumulado_fmi(menos_dias(INICIO_PROGRAMA_FMI, 1), cache)
     hoy = dt.date.today()
-    cortes = [menos_dias(INICIO_PROGRAMA_FMI, 1)]
+    out: list[dict] = []
+    previo = base
     d = dt.date.fromisoformat(INICIO_PROGRAMA_FMI)
     while True:
         fin = (d.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)
         if fin >= hoy:
-            cortes.append(hoy.isoformat())
             break
-        cortes.append(fin.isoformat())
+        v = acumulado_fmi(fin.isoformat(), cache)
+        if abs(v - previo) >= 1:
+            out.append({"fecha": fin.isoformat(), "deg": v - base})
+            previo = v
         d = fin + dt.timedelta(days=1)
-
-    cambios: list[str] = []
-
-    def buscar(a: str, b: str) -> None:
-        va, vb = acumulado_fmi(a, cache), acumulado_fmi(b, cache)
-        if abs(va - vb) < 1:
-            return
-        if dias_entre(a, b) == 1:
-            cambios.append(b)
-            return
-        m = menos_dias(b, dias_entre(a, b) // 2)
-        buscar(a, m)
-        buscar(m, b)
-
-    for a, b in zip(cortes, cortes[1:]):
-        buscar(a, b)
-    return [{"fecha": f, "deg": acumulado_fmi(f, cache) - base} for f in sorted(set(cambios))]
+    return out
 
 
 # ── construcción ─────────────────────────────────────────────────────────────
