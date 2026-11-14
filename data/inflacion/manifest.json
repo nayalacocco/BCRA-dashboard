@@ -1,0 +1,242 @@
+{
+ "schema_version": 1,
+ "generado_utc": "2026-11-13T18:56:50+00:00",
+ "ultimo_periodo": "2026-10",
+ "n_items": 218,
+ "n_items_publicados": 164,
+ "n_items_residuales": 54,
+ "fuentes": {
+  "divisiones": {
+   "url": "https://www.indec.gob.ar/ftp/cuadros/economia/serie_ipc_divisiones.csv",
+   "sha256": "0776b25299b68f70496b6d717fd567becb26c4d2c018df1a82620cdd62546e9d",
+   "bytes": 1252806
+  },
+  "aperturas": {
+   "url": "https://www.indec.gob.ar/ftp/cuadros/economia/serie_ipc_aperturas.csv",
+   "sha256": "76387fe7fe3b4a53a72e5359bf0fe0b4ea966af76bf6f0c14563e078fb2030b0",
+   "bytes": 2526872
+  },
+  "ponderadores": {
+   "url": "https://www.indec.gob.ar/ftp/cuadros/economia/ponderadores_ipc.xls",
+   "sha256": "2733031587be49317deed880ceffac66061d834b6e913cc5b2ff1586dffb0aa7",
+   "bytes": 50688
+  }
+ },
+ "pesos_region": {
+  "GBA": 0.447,
+  "Pampeana": 0.342,
+  "Noreste": 0.045,
+  "Noroeste": 0.069,
+  "Cuyo": 0.052,
+  "Patagonia": 0.046
+ },
+ "checks": [
+  {
+   "nombre": "ponderadores_suman_1",
+   "ok": true,
+   "bloqueante": true,
+   "detalle": "Divisiones suman 1 en cada región y regiones suman 1",
+   "datos": {
+    "regiones": {},
+    "suma_regiones": 1.0010000000000001
+   }
+  },
+  {
+   "nombre": "fechas_alineadas_sin_huecos",
+   "ok": true,
+   "bloqueante": true,
+   "detalle": "Último período divisiones=2026-10, aperturas=2026-10; huecos=0; ítems con faltantes=0",
+   "datos": {
+    "ultimo_divisiones": "2026-10",
+    "ultimo_aperturas": "2026-10",
+    "huecos": [],
+    "items_con_faltantes": []
+   }
+  },
+  {
+   "nombre": "reconciliacion_headline",
+   "ok": true,
+   "bloqueante": true,
+   "detalle": "Nacional: desvío máx 0.0161 pp, mediana 0.0013 pp (tol 0.05); regiones máx 0.0377 pp (tol 0.1)",
+   "datos": {
+    "tol_nacional_pp": 0.05,
+    "tol_region_pp": 0.1,
+    "nacional_max_abs_pp": 0.0161,
+    "nacional_mediana_abs_pp": 0.0013,
+    "regiones_max_abs_pp": 0.0377,
+    "meses_fuera_tol_nacional": []
+   }
+  },
+  {
+   "nombre": "divisiones_cubiertas_por_aperturas",
+   "ok": true,
+   "bloqueante": false,
+   "detalle": "12 divisiones×región cubiertas solo por aperturas; desvío máx 0.0078 pp (referencia 0,15)",
+   "datos": {
+    "detalle": [
+     {
+      "region": "GBA",
+      "division": "02",
+      "max_abs_pp": 0.0016,
+      "mediana_abs_pp": 0.0004
+     },
+     {
+      "region": "GBA",
+      "division": "03",
+      "max_abs_pp": 0.001,
+      "mediana_abs_pp": 0.0001
+     },
+     {
+      "region": "Pampeana",
+      "division": "02",
+      "max_abs_pp": 0.0047,
+      "mediana_abs_pp": 0.001
+     },
+     {
+      "region": "Pampeana",
+      "division": "03",
+      "max_abs_pp": 0.0008,
+      "mediana_abs_pp": 0.0001
+     },
+     {
+      "region": "Noreste",
+      "division": "02",
+      "max_abs_pp": 0.0047,
+      "mediana_abs_pp": 0.001
+     },
+     {
+      "region": "Noreste",
+      "division": "03",
+      "max_abs_pp": 0.0001,
+      "mediana_abs_pp": 0.0
+     },
+     {
+      "region": "Noroeste",
+      "division": "02",
+      "max_abs_pp": 0.0052,
+      "mediana_abs_pp": 0.0008
+     },
+     {
+      "region": "Noroeste",
+      "division": "03",
+      "max_abs_pp": 0.0011,
+      "mediana_abs_pp": 0.0001
+     },
+     {
+      "region": "Cuyo",
+      "division": "02",
+      "max_abs_pp": 0.0078,
+      "mediana_abs_pp": 0.0013
+     },
+     {
+      "region": "Cuyo",
+      "division": "03",
+      "max_abs_pp": 0.0048,
+      "mediana_abs_pp": 0.0006
+     },
+     {
+      "region": "Patagonia",
+      "division": "02",
+      "max_abs_pp": 0.005,
+      "mediana_abs_pp": 0.0009
+     },
+     {
+      "region": "Patagonia",
+      "division": "03",
+      "max_abs_pp": 0.001,
+      "mediana_abs_pp": 0.0001
+     }
+    ]
+   }
+  },
+  {
+   "nombre": "outliers",
+   "ok": true,
+   "bloqueante": false,
+   "detalle": "1080 observaciones con |z|>4.0; 0 en el último mes",
+   "datos": {
+    "ultimo_mes": []
+   }
+  }
+ ],
+ "advertencias": [],
+ "imputados": {
+  "GBA:03.1": [
+   "2020-04"
+  ],
+  "GBA:03.2": [
+   "2020-04"
+  ],
+  "GBA:11.1": [
+   "2020-04",
+   "2020-05",
+   "2020-06",
+   "2020-07"
+  ],
+  "Pampeana:03.1": [
+   "2020-04"
+  ],
+  "Pampeana:03.2": [
+   "2020-04"
+  ],
+  "Pampeana:11.1": [
+   "2020-04",
+   "2020-05",
+   "2020-06",
+   "2020-07"
+  ],
+  "Noreste:03.1": [
+   "2020-04"
+  ],
+  "Noreste:03.2": [
+   "2020-04"
+  ],
+  "Noreste:11.1": [
+   "2020-04",
+   "2020-05",
+   "2020-06",
+   "2020-07"
+  ],
+  "Noroeste:03.1": [
+   "2020-04"
+  ],
+  "Noroeste:03.2": [
+   "2020-04"
+  ],
+  "Noroeste:11.1": [
+   "2020-04",
+   "2020-05",
+   "2020-06",
+   "2020-07"
+  ],
+  "Cuyo:03.1": [
+   "2020-04"
+  ],
+  "Cuyo:03.2": [
+   "2020-04"
+  ],
+  "Cuyo:11.1": [
+   "2020-04",
+   "2020-05",
+   "2020-06",
+   "2020-07"
+  ],
+  "Patagonia:03.1": [
+   "2020-04"
+  ],
+  "Patagonia:03.2": [
+   "2020-04"
+  ],
+  "Patagonia:11.1": [
+   "2020-04",
+   "2020-05",
+   "2020-06",
+   "2020-07"
+  ]
+ },
+ "metodologia": {
+  "items": "Hojas de serie_ipc_aperturas.csv por región + un ítem 'Resto de división' por división×región derivado con ponderadores de base.",
+  "peso_nacional": "W_region × w_item|region (ponderadores_ipc.xls, dic-2016).",
+  "peso_efectivo": "ω_i,t = ω_i·I_i,t−1 / Σ ω_j·I_j,t−1 (índice de base fija)."
+ }
+}
