@@ -11,6 +11,9 @@ Salidas (JSON, versionadas en git):
   panel_indices.json   índices por ítem (base dic-2016 = 100), una fila por mes
   headline.json        publicados por INDEC (Nacional): nivel general, núcleo, regulados, estacional, bienes, servicios
   reconciliacion.json  m/m publicado vs. recomputado, por Nacional y región
+  difusion.json        M2: difusión, rotación, variance ratio, persistencia y régimen (12 variantes)
+  heatmap.json         M2: cambio de precio relativo r_{i,t} por ítem
+  desest.json          resultado del test de estacionalidad por ítem
 """
 
 from __future__ import annotations
@@ -153,6 +156,10 @@ def main() -> int:
     ], ensure_ascii=False))
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     print(f"\nEscrito en {out} — último período {ultimo:%Y-%m}, {len(items)} ítems")
+
+    # M2 — difusión y rotación (lee los JSON recién escritos)
+    from .difusion_export import exportar, resumen
+    print(resumen(exportar(out)))
     return 0
 
 
