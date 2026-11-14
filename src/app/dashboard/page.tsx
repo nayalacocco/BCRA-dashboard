@@ -4,7 +4,6 @@ import { getAllVariables, getVariableHistorico } from "@/lib/bcra/client";
 import { EXTENDED_DASHBOARD_IDS } from "@/lib/bcra/constants";
 import { DashboardClient, type HistoricPoint } from "./DashboardClient";
 import { ChartSkeleton } from "@/components/ui/LoadingState";
-import { formatDateTime } from "@/lib/bcra/format";
 import { saveToKV, loadFromKV } from "@/lib/bcra/kv-cache";
 import { fetchDashboardIndecData } from "@/lib/indec/client";
 
@@ -61,10 +60,15 @@ async function DashboardContent() {
       }
     });
 
-    pageGeneratedAt = formatDateTime(new Date());
-    lastBCRAUpdate =
-      allVariables.find((v) => v.idVariable === 1)?.ultFechaInformada ??
-      allVariables[0]?.ultFechaInformada;
+    // ISO: el cliente lo formatea en hora de Buenos Aires (antes se pasaba ya formateado → "Invalid Date")
+    pageGeneratedAt = new Date().toISOString();
+    // Fecha del dato más reciente entre las variables del dashboard
+    // (antes se tomaba Reservas, que publica con 2-3 días de rezago y no coincidía con el FX)
+    lastBCRAUpdate = EXTENDED_DASHBOARD_IDS
+      .map((id) => latestValues[id]?.fecha)
+      .filter((f): f is string => !!f)
+      .sort()
+      .at(-1);
 
     bcraOk = true;
   } catch (error) {

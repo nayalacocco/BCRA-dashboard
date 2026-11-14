@@ -18,6 +18,36 @@ interface DeltaKPICardProps {
   showSign?: boolean;
   /** Muestra valor compacto (divide por 1000 y agrega "B") para M$ grandes */
   compact?: boolean;
+  /**
+   * "pct" (default): variación absoluta + variación porcentual.
+   * "pp": para tasas/porcentajes — muestra solo la diferencia en puntos porcentuales
+   * (una variación % de una tasa, ej. 1,7%→1,9% = "+11,76%", es engañosa).
+   */
+  deltaMode?: "pct" | "pp";
+  /**
+   * Si la fecha del dato es más vieja que esto (días), la tarjeta se marca como
+   * desactualizada. Atrapa series discontinuadas en la fuente (ej. datos.gob.ar
+   * mantiene IDs vivos pero sin datos nuevos). Default 150 días ≈ rezago normal
+   * de series mensuales de INDEC (~3 meses) + margen.
+   */
+  staleAfterDays?: number;
+  /** "day" (default): "Al 11/11/2026". "month": "Oct 26" — para datos mensuales, donde el día no aporta. */
+  dateFormat?: "day" | "month";
+}
+
+const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+/** "2026-10-01" | "2026-10-31" → "Oct 26" */
+function formatMonth(isoDate: string): string {
+  const [y, m] = isoDate.split("-");
+  const mi = parseInt(m, 10) - 1;
+  return mi >= 0 && mi < 12 ? `${MESES[mi]} ${y.slice(2)}` : isoDate;
+}
+
+function daysSince(isoDate: string): number {
+  const t = new Date(isoDate + "T12:00:00Z").getTime();
+  if (isNaN(t)) return 0;
+  return Math.floor((Date.now() - t) / 86_400_000);
 }
 
 function formatCompact(value: number, decimals: number): { display: string; scale: string } {
@@ -61,7 +91,13 @@ export function DeltaKPICard({
   positiveIsGood = true,
   showSign = false,
   compact = false,
+  deltaMode,
+  staleAfterDays = 150,
+  dateFormat = "day",
 }: DeltaKPICardProps) {
+  // Por defecto, si la unidad es un porcentaje (tasa, inflación), el delta va en pp
+  const mode = deltaMode ?? (suffix.trim().startsWith("%") ? "pp" : "pct");
+  const isStale = value != null && !!date && daysSince(date) > staleAfterDays;
   // Format main value
   let displayValue = "—";
   let scaleLabel = "";
@@ -95,27 +131,57 @@ export function DeltaKPICard({
 
   const arrow = isNeutral ? "–" : isPositive ? "▲" : "▼";
 
-  // Absolute delta formatted
-  const absFormatted =
-    hasAbsDelta && delta!.abs != null
-      ? (delta!.abs > 0 ? "+" : "") +
+  // Absolute delta formatted — en la misma escala que el valor principal
+  let absFormatted: string | null = null;
+  if (hasAbsDelta && delta!.abs != null) {
+    const sign = delta!.abs > 0 ? "+" : "";
+    if (compact && value != null && Math.abs(value) >= 1_000) {
+      // Misma escala que el valor principal (ej. valor "46,8B" → delta "-0,15B", no "-153.460")
+      const div = Math.abs(value) >= 1_000_000 ? 1_000_000 : 1_000;
+      const scale = div === 1_000_000 ? "B" : "K";
+      absFormatted =
+        sign +
+        (delta!.abs / div).toLocaleString("es-AR", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }) +
+        scale;
+    } else {
+      const d = decimals > 2 ? 2 : decimals;
+      absFormatted =
+        sign +
         delta!.abs.toLocaleString("es-AR", {
-          minimumFractionDigits: decimals > 2 ? 2 : decimals,
-          maximumFractionDigits: decimals > 2 ? 2 : decimals,
-        })
-      : null;
+          minimumFractionDigits: d,
+          maximumFractionDigits: d,
+        });
+    }
+    if (mode === "pp") absFormatted += " pp";
+  }
 
   const pctFormatted =
-    hasPctDelta && delta!.pct != null
-      ? Math.abs(delta!.pct).toFixed(2) + "%"
+    mode === "pct" && hasPctDelta && delta!.pct != null
+      ? Math.abs(delta!.pct).toLocaleString("es-AR", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }) + "%"
       : null;
 
   return (
     <div className="card card-dark p-4 flex flex-col gap-2 hover:shadow-md transition-shadow">
       {/* Label */}
-      <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide leading-tight">
-        {label}
-      </p>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide leading-tight">
+          {label}
+        </p>
+        {isStale && (
+          <span
+            className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400"
+            title="La fuente dejó de publicar esta serie o tiene un rezago anormal"
+          >
+            ⚠ desactualizado
+          </span>
+        )}
+      </div>
 
       {/* Main value */}
       <div className="flex items-baseline gap-1 flex-wrap">
@@ -125,8 +191,8 @@ export function DeltaKPICard({
           </span>
         )}
         <span
-          className="font-mono text-xl font-bold tracking-tight leading-none"
-          style={{ color }}
+          className={`font-mono text-xl font-bold tracking-tight leading-none ${isStale ? "text-slate-400 dark:text-slate-500" : ""}`}
+          style={{ color: isStale ? undefined : color }}
         >
           {displayValue}
           {scaleLabel && (
@@ -153,7 +219,7 @@ export function DeltaKPICard({
       {/* Date */}
       {date && (
         <p className="text-xs text-slate-400 dark:text-slate-600 mt-auto">
-          Al {formatDate(date)}
+          {dateFormat === "month" ? formatMonth(date) : `Al ${formatDate(date)}`}
         </p>
       )}
     </div>
