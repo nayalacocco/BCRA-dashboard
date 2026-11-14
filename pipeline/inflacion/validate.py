@@ -147,3 +147,41 @@ def check_outliers(panel: pd.DataFrame, z: float = 4.0) -> Check:
 
 def to_dict(c: Check) -> dict:
     return asdict(c)
+
+
+def check_universo(items) -> Check:
+    """
+    Canasta completa: aperturas × región y "restos de división" no se superponen y los ponderadores suman 1.
+      - ids únicos;
+      - en cada región, ninguna apertura publicada es ancestro de otra (solo hojas del árbol);
+      - a lo sumo un resto por división y región;
+      - pesos por región y nacional suman 1 con tolerancia 1e-6.
+    """
+    TOL = 1e-6
+    problemas: list[str] = []
+    ids = [it.id for it in items]
+    if len(ids) != len(set(ids)):
+        problemas.append("ids duplicados")
+    regiones = sorted({it.region for it in items})
+    sumas = {}
+    for r in regiones:
+        sub = [it for it in items if it.region == r]
+        pub = [it.codigo for it in sub if not it.residual]
+        anc = [(a, b) for a in pub for b in pub if a != b and b.startswith(a + ".")]
+        if anc:
+            problemas.append(f"{r}: aperturas superpuestas {anc[:3]}")
+        res = [it.division for it in sub if it.residual]
+        if len(res) != len(set(res)):
+            problemas.append(f"{r}: más de un resto por división")
+        sumas[r] = sum(it.peso_region for it in sub)
+    nac = sum(it.peso_nacional for it in items)
+    malos = {r: s for r, s in sumas.items() if abs(s - 1) > TOL}
+    if malos:
+        problemas.append(f"pesos regionales fuera de tolerancia: {malos}")
+    if abs(nac - 1) > TOL:
+        problemas.append(f"peso nacional suma {nac:.9f}")
+    ok = not problemas
+    det = (f"{len(items)} ítems sin superposición; pesos suman 1 (tolerancia {TOL:g}; desvío nacional {abs(nac - 1):.1e})"
+           if ok else "; ".join(problemas))
+    return Check("universo_consistente", ok, True, det,
+                 {"items": len(items), "desvio_nacional": abs(nac - 1), "desvio_max_region": max(abs(s - 1) for s in sumas.values())})

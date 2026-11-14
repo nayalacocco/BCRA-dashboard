@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  Area,
   Bar,
   BarChart,
   CartesianGrid,
@@ -27,8 +28,9 @@ import { Eyebrow, Formula, Lede, PageTitle, Section } from "@/components/ds/Typo
 import { diverging, divergingSteps } from "@/design/tokens";
 import { atrasado, fmtFecha, proximaPublicacion } from "@/lib/indec/calendario";
 import { fmt, fmtMes, fmtSigno, mesLargo } from "@/lib/inflacion/formato";
-import type { DifusionData, K, PondKey, SerieKey, UniversoKey, Variante } from "@/lib/inflacion/difusion-types";
+import type { DifusionData, K, PondKey, PreciosRelativosData, SerieKey, UniversoKey, Validacion, Variante } from "@/lib/inflacion/difusion-types";
 import { Heatmap } from "./Heatmap";
+import { EvolucionRelativa, NivelDireccion, cuadrante, relevancia } from "./PreciosRelativos";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -130,12 +132,14 @@ function bajada(p: {
 
 export function DifusionClient({
   data,
+  precios,
+  validacion: VAL,
   generado,
-  reconciliacionMaxPp,
 }: {
   data: DifusionData;
+  precios: PreciosRelativosData;
+  validacion: Validacion;
   generado: string;
-  reconciliacionMaxPp: number | null;
 }) {
   const S = useChartStyle();
   const { t: T } = S;
@@ -201,7 +205,11 @@ export function DifusionClient({
           rho6: v.rho6[i],
           rho12: v.rho12[i],
           C: v.C[k][i],
-          Cref: v.Cref[k][i],
+          Cmed: v.Cnull[k][1][i],
+          // Recharts dibuja un área de rango con [bajo, alto]
+          Cband: v.Cnull[k][0][i] != null && v.Cnull[k][2][i] != null ? ([v.Cnull[k][0][i], v.Cnull[k][2][i]] as unknown as number) : null,
+          VRmed: v.VRnull[k][1][i],
+          VRband: v.VRnull[k][0][i] != null && v.VRnull[k][2][i] != null ? ([v.VRnull[k][0][i], v.VRnull[k][2][i]] as unknown as number) : null,
         };
         for (const kk of KS) {
           row[`A${kk}`] = v.A[kk][i];
@@ -221,13 +229,18 @@ export function DifusionClient({
   const mesAnt = tp >= 0 ? fmtMes(data.fechas[tp]) : null;
   const ultimo = fmtMes(data.fechas[t]);
   const pi = data.headline[serie][t];
-  const [lo3, hi3] = v.VRbanda["3"];
-  const [loK, hiK] = v.VRbanda[k];
+  // Null por permutación del mes t: [p5, p95]
+  const lo3 = v.VRnull["3"][0][t];
+  const hi3 = v.VRnull["3"][2][t];
+  const loK = v.VRnull[k][0][t];
+  const hiK = v.VRnull[k][2][t];
+  const [umbLo, umbHi] = v.umbrales_D;
   const reg = data.regimenes[v.regimen.codigo[t]];
   const amp = v.regimen.amplitud[t];
   const din = v.regimen.dinamica[t];
   const vr12 = v.VR["12"][t];
-  const [lo12, hi12] = v.VRbanda["12"];
+  const lo12 = v.VRnull["12"][0][t];
+  const hi12 = v.VRnull["12"][2][t];
   const lectura12 =
     vr12 == null || lo12 == null || hi12 == null
       ? null
@@ -262,7 +275,7 @@ export function DifusionClient({
   const xMin = Math.floor(Math.min(30, ...quad.map((p) => p.x)) / 5) * 5;
   const xMax = Math.ceil(Math.max(55, ...quad.map((p) => p.x)) / 5) * 5;
   const yMax = Math.ceil(Math.max(2, ...quad.map((p) => p.y)) * 2) / 2;
-  const mitadD = (P.umbral_D_concentrada + P.umbral_D_generalizada) / 2;
+  const mitadD = umbLo != null && umbHi != null ? (umbLo + umbHi) / 2 : 44;
   const semiD = Math.max(5, (xMax - xMin) / 2);
 
   // Series de los gráficos
@@ -286,9 +299,28 @@ export function DifusionClient({
   // Subtítulos con la conclusión
   const D3t = v.regimen.D3[t];
   const zonaD =
-    D3t == null ? "sin dato" : D3t < P.umbral_D_concentrada ? "zona de suba concentrada" : D3t >= P.umbral_D_generalizada ? "zona de suba generalizada" : "zona intermedia";
+    D3t == null || umbLo == null || umbHi == null
+      ? "sin dato"
+      : D3t < umbLo
+        ? "tercio inferior de su historia (suba concentrada)"
+        : D3t >= umbHi
+          ? "tercio superior de su historia (suba generalizada)"
+          : "tercio central de su historia (amplitud intermedia)";
   const Ct = v.C[k][t];
-  const Creft = v.Cref[k][t];
+  const CmedT = v.Cnull[k][1][t];
+  const CloT = v.Cnull[k][0][t];
+  const ChiT = v.Cnull[k][2][t];
+
+  // Precios relativos para la lectura: los más alejados de su ancla (ponderador ≥ 1 %), con su cuadrante
+  const PRN = precios.grupos.Nacional;
+  const extremosPR = Object.entries(PRN.items)
+    .filter(([id, it]) => (PRN.peso?.[id] ?? 0) >= 1 && it.desvio_filtrada != null)
+    .sort((x, y) => Math.abs(y[1].desvio_filtrada as number) - Math.abs(x[1].desvio_filtrada as number))
+    .slice(0, 3);
+  void relevancia;
+  // Sesgo de la aproximación descartada 1 − Π(1 − D) frente a la mediana del null, C(3), en esta variante
+  const difsCref = v.Cref["3"].map((x, i) => (x != null && v.Cnull["3"][1][i] != null ? x - (v.Cnull["3"][1][i] as number) : null)).filter((x): x is number => x != null);
+  const sesgoCref = difsCref.length ? difsCref.reduce((s2, x) => s2 + x, 0) / difsCref.length : null;
   const VRk = v.VR[k][t];
   const At = v.A[k][t];
   const rho12t = v.rho12[t];
@@ -363,15 +395,15 @@ export function DifusionClient({
                 <dt className="font-semibold text-ds-text inline">Amplitud. </dt>
                 <dd className="inline">{amp ? data.amplitud_etiquetas[amp] : "Sin dato"}.</dd>
                 <p className="tnum text-[12px] text-ds-muted mt-0.5">
-                  D̄ (3 meses) = {fmt(v.regimen.D3[t])} % · umbrales {fmt(P.umbral_D_concentrada, 0)} y {fmt(P.umbral_D_generalizada, 0)} %
+                  D̄ (3 meses) = {fmt(v.regimen.D3[t])} % · terciles históricos {fmt(umbLo)} y {fmt(umbHi)} %
                 </p>
               </div>
               <div className="border-t border-ds-rule pt-2.5">
                 <dt className="font-semibold text-ds-text inline">Dinámica. </dt>
                 <dd className="inline">{din ? data.dinamica_etiquetas[din] : "Sin dato"}.</dd>
                 <p className="tnum text-[12px] text-ds-muted mt-0.5">
-                  VR(3) = {fmt(v.VR["3"][t], 2)} · banda sin memoria {fmt(lo3, 2)}–{fmt(hi3, 2)} · C(3) = {fmt(v.C["3"][t])} % vs.{" "}
-                  {fmt(v.Cref["3"][t])} % al azar
+                  VR(3) = {fmt(v.VR["3"][t], 2)} vs. banda del azar {fmt(lo3, 2)}–{fmt(hi3, 2)} · C(3) = {fmt(v.C["3"][t])} % vs. banda{" "}
+                  {fmt(v.Cnull["3"][0][t])}–{fmt(v.Cnull["3"][2][t])} %
                 </p>
               </div>
               {lectura12 && (
@@ -380,6 +412,22 @@ export function DifusionClient({
                   <dd className="inline">
                     VR(12) = <span className="tnum">{fmt(vr12, 2)}</span>: {lectura12}.
                   </dd>
+                </div>
+              )}
+              {extremosPR.length > 0 && (
+                <div className="border-t border-ds-rule pt-2.5">
+                  <dt className="font-semibold text-ds-text inline">Precios relativos. </dt>
+                  <dd className="inline">
+                    {extremosPR.map(([id, it], j) => (
+                      <span key={id}>
+                        {j > 0 && "; "}
+                        {it.nombre}: <span className="tnum">{fmtSigno(it.desvio_filtrada)} %</span> vs. su ancla y {cuadrante(it.desvio_filtrada, it.d6)?.split(" y ")[1]} (
+                        <span className="tnum">{fmtSigno(it.d6)} %</span> en 6 meses)
+                      </span>
+                    ))}
+                    .
+                  </dd>
+                  <p className="text-[12px] text-ds-muted mt-0.5">Ancla: historia sin cepo (s.e.). Es nivel, no timing: ver el backtest en Precios relativos.</p>
                 </div>
               )}
               {amp && din && (
@@ -402,7 +450,7 @@ export function DifusionClient({
             sub={
               quad.length
                 ? `${mes}: amplitud ${fmt(D3t)} % y VR(3) ${fmt(v.VR["3"][t], 2)}${
-                    lo3 != null && hi3 != null ? ((v.VR["3"][t] ?? 0) > hi3 ? ", por encima de la banda sin memoria" : (v.VR["3"][t] ?? 0) < lo3 ? ", por debajo de la banda sin memoria" : ", dentro de la banda sin memoria") : ""
+                    lo3 != null && hi3 != null ? ((v.VR["3"][t] ?? 0) > hi3 ? ", por encima de la banda del azar" : (v.VR["3"][t] ?? 0) < lo3 ? ", por debajo de la banda del azar" : ", dentro de la banda del azar") : ""
                   }.`
                 : undefined
             }
@@ -411,8 +459,9 @@ export function DifusionClient({
             howTo={
               <>
                 <p>
-                  Eje horizontal: amplitud, D̄ = promedio de 3 meses de la difusión. Eje vertical: variance ratio a 3 meses. El color de cada punto
-                  va de azul (suba concentrada) a rojo (suba generalizada).
+                  Eje horizontal: amplitud, D̄ = promedio de 3 meses de la difusión; franja: tercio central de su historia. Eje vertical: variance
+                  ratio a 3 meses; franja: p5–p95 del null por permutación en {mes}. El color de cada punto va de azul (suba concentrada) a rojo
+                  (suba generalizada).
                 </p>
                 <Formula>VR_t(3) = Var(Σ_j r_i,t−j) / (3 · media_j Var(r_i,t−j))</Formula>
               </>
@@ -447,9 +496,11 @@ export function DifusionClient({
                       {...S.yAxis}
                       tickFormatter={(y) => fmt(y, 1)}
                     />
-                    <ReferenceArea x1={P.umbral_D_concentrada} x2={P.umbral_D_generalizada} {...S.band} label={S.bandLabel("zona intermedia", "insideBottomLeft")} />
+                    {umbLo != null && umbHi != null && (
+                      <ReferenceArea x1={umbLo} x2={umbHi} {...S.band} label={S.bandLabel("tercio central", "insideBottomLeft")} />
+                    )}
                     {lo3 != null && hi3 != null && (
-                      <ReferenceArea y1={lo3} y2={Math.min(hi3, yMax)} {...S.band} label={S.bandLabel("banda sin memoria", "insideTopRight")} />
+                      <ReferenceArea y1={lo3} y2={Math.min(hi3, yMax)} {...S.band} label={S.bandLabel(`banda del azar (${mes})`, "insideTopRight")} />
                     )}
                     <ReferenceLine y={1} {...S.refLine} />
                     <Tooltip
@@ -523,7 +574,7 @@ export function DifusionClient({
           unit="%"
           delta={delta(v.D)}
           spark={ult12(v.D)}
-          context={`Promedio 3 meses: ${fmt(D3t)} %`}
+          context={`Promedio 3 meses: ${fmt(D3t)} % (terciles ${fmt(umbLo, 0)}–${fmt(umbHi, 0)})`}
           hint="% de la canasta que sube más que el nivel general"
         />
         <Kpi
@@ -540,7 +591,7 @@ export function DifusionClient({
           unit="%"
           delta={delta(v.C["3"])}
           spark={ult12(v.C["3"])}
-          context={`Esperable al azar: ${fmt(v.Cref["3"][t])} %`}
+          context={`Esperable al azar: ${fmt(v.Cnull["3"][1][t])} % (${fmt(v.Cnull["3"][0][t])}–${fmt(v.Cnull["3"][2][t])})`}
           hint="% de la canasta que superó al nivel general en al menos uno de los últimos 3 meses"
         />
         <Kpi
@@ -548,7 +599,7 @@ export function DifusionClient({
           value={fmt(v.VR["3"][t], 2)}
           delta={delta(v.VR["3"], 2, "")}
           spark={ult12(v.VR["3"])}
-          context={`Banda sin memoria: ${fmt(lo3, 2)}–${fmt(hi3, 2)}`}
+          context={`Banda del azar: ${fmt(lo3, 2)}–${fmt(hi3, 2)}`}
           hint="< 1: los precios relativos revierten · ≈ 1: ruido · > 1: cambio persistente"
         />
       </KpiStrip>
@@ -603,7 +654,7 @@ export function DifusionClient({
             legend={[
               { label: "D mensual", color: T.muted },
               { label: "Promedio 3 meses", color: T.s1 },
-              { label: "Zona intermedia", color: T.band, kind: "band" },
+              { label: "Tercio central de su historia", color: T.band, kind: "band" },
             ]}
             table={tabla([
               { key: "D", name: "D mensual", f: fmtPct },
@@ -614,9 +665,10 @@ export function DifusionClient({
             howTo={
               <>
                 <p>
-                  % de la canasta cuya variación mensual supera a la del nivel general. Por debajo de {fmt(P.umbral_D_concentrada, 0)} % la suba
-                  es concentrada; desde {fmt(P.umbral_D_generalizada, 0)} %, generalizada. El punto neutro no es 50 %: la distribución de
-                  variaciones es asimétrica a derecha.
+                  % de la canasta cuya variación mensual supera a la del nivel general. Umbrales: terciles de la distribución histórica de D̄ de
+                  esta variante ({fmt(umbLo)} y {fmt(umbHi)} %). Por debajo del primero la suba es concentrada; desde el segundo, generalizada. No se
+                  usa 50 % como punto neutro: la distribución de variaciones es asimétrica a la derecha (pocos rubros con subas grandes tiran el
+                  promedio para arriba) y D queda estructuralmente por debajo de 50 %.
                 </p>
                 <Formula>D_t = Σ ω_i · 1[π_i,t &gt; π_t]</Formula>
               </>
@@ -626,8 +678,8 @@ export function DifusionClient({
               <LineChart data={rows} margin={MARGEN}>
                 <CartesianGrid {...S.grid} />
                 <XAxis dataKey="fecha" tickFormatter={fmtMes} interval={tickInterval} {...S.xAxis} />
-                <YAxis {...yAxisNice([...col("D"), ...col("D3")], 5, [P.umbral_D_concentrada, 50])} tickFormatter={(x) => `${x} %`} {...S.yAxis} />
-                <ReferenceArea y1={P.umbral_D_concentrada} y2={P.umbral_D_generalizada} {...S.band} label={labelTop("zona intermedia")} />
+                <YAxis {...yAxisNice([...col("D"), ...col("D3")], 5, [umbLo ?? 40, 50])} tickFormatter={(x) => `${x} %`} {...S.yAxis} />
+                {umbLo != null && umbHi != null && <ReferenceArea y1={umbLo} y2={umbHi} {...S.band} label={labelTop("tercio central")} />}
                 <ReferenceLine y={50} {...S.refLine} />
                 <Tooltip
                   cursor={S.cursorLine}
@@ -662,52 +714,63 @@ export function DifusionClient({
           <ChartFrame
             title={`Cobertura de rotación C(${k})${SE}`}
             sub={
-              Ct != null && Creft != null
-                ? `${fmt(Ct)} % vs. ${fmt(Creft)} % esperable al azar: ${
-                    Ct < Creft ? "lideran los mismos rubros más de lo que daría el azar" : "los rubros se turnan más que al azar"
+              Ct != null && CloT != null && ChiT != null
+                ? `${fmt(Ct)} % vs. ${fmt(CmedT)} % esperable al azar (banda ${fmt(CloT)}–${fmt(ChiT)} %): ${
+                    Ct < CloT
+                      ? "lideran los mismos rubros más de lo que daría el azar"
+                      : Ct > ChiT
+                        ? "los rubros se turnan más de lo que daría el azar"
+                        : "no se distingue del azar"
                   }.`
                 : undefined
             }
             legend={[
               { label: `C(${k}) observada`, color: T.s1 },
-              { label: "Esperable al azar", color: T.muted, kind: "dash" },
+              { label: "Mediana del azar", color: T.text2, kind: "dash" },
+              { label: "Banda del azar (p5–p95)", color: T.band, kind: "band" },
             ]}
             table={tabla([
               { key: "C", name: `C(${k})`, f: fmtPct },
-              { key: "Cref", name: "Al azar", f: fmtPct },
+              { key: "Cmed", name: "Mediana del azar", f: fmtPct },
             ])}
             source={`${FUENTE} % de la canasta.`}
             lastData={ultimo}
             howTo={
               <>
                 <p>
-                  % de la canasta que superó al nivel general en al menos uno de los últimos {k} meses. La referencia es lo que daría si cada mes
-                  liderara un grupo de ítems al azar.
+                  % de la canasta que superó al nivel general en al menos uno de los últimos {k} meses. La banda es el p5–p95 de {fmt(P.replicas_null, 0)}{" "}
+                  réplicas que permutan los años dentro de cada mes calendario, ítem por ítem: cada rubro conserva su estacionalidad y su deriva
+                  media, pero se rompe la dependencia entre meses.
                 </p>
-                <Formula>C_t(k) = Σ ω_i · 1[π_i &gt; π en ≥ 1 mes de la ventana]   ·   C*_t(k) = 1 − Π_j (1 − D_t−j)</Formula>
+                <Formula>C_t(k) = Σ ω_i · 1[π_i &gt; π en ≥ 1 mes de la ventana]</Formula>
               </>
             }
           >
             <ResponsiveContainer width="100%" height={260}>
-              <LineChart data={rows} margin={MARGEN}>
+              <ComposedChart data={rows} margin={MARGEN}>
                 <CartesianGrid {...S.grid} />
                 <XAxis dataKey="fecha" tickFormatter={fmtMes} interval={tickInterval} {...S.xAxis} />
-                <YAxis {...yAxisNice([...col("C"), ...col("Cref")], 5)} tickFormatter={(x) => `${x} %`} {...S.yAxis} />
+                <YAxis
+                  {...yAxisNice([...col("C"), ...rows.flatMap((r) => (Array.isArray(r.Cband) ? (r.Cband as number[]) : []))], 5)}
+                  tickFormatter={(x) => `${x} %`}
+                  {...S.yAxis}
+                />
                 <Tooltip
                   cursor={S.cursorLine}
                   content={tip([
                     { key: "C", name: `C(${k})`, color: T.s1, fmt: fmtPct },
-                    { key: "Cref", name: "Al azar", color: T.muted, fmt: fmtPct },
+                    { key: "Cmed", name: "Mediana del azar", color: T.text2, fmt: fmtPct },
                   ])}
                 />
-                <Line dataKey="Cref" stroke={T.muted} strokeDasharray="5 4" {...S.line} />
+                <Area dataKey="Cband" stroke="none" fill={T.band} fillOpacity={T.bandOpacity * 1.6} isAnimationActive={false} connectNulls={false} />
+                <Line dataKey="Cmed" stroke={T.text2} strokeDasharray="4 4" strokeWidth={1.25} dot={false} isAnimationActive={false} />
                 <Line dataKey="C" stroke={T.s1} {...S.line} />
                 <Customized
                   component={(p: object) => (
-                    <DirectLabels {...p} t={T} items={[etiq("C", `C(${k})`, T.s1, fmtPct), etiq("Cref", "Al azar", T.muted, fmtPct, true)]} />
+                    <DirectLabels {...p} t={T} items={[etiq("C", `C(${k})`, T.s1, fmtPct), etiq("Cmed", "Mediana azar", T.text2, fmtPct, true)]} />
                   )}
                 />
-              </LineChart>
+              </ComposedChart>
             </ResponsiveContainer>
           </ChartFrame>
 
@@ -715,14 +778,15 @@ export function DifusionClient({
             title={`Variance ratio de precios relativos${SE}`}
             sub={
               VRk != null && loK != null && hiK != null
-                ? `VR(${k}) = ${fmt(VRk, 2)}, ${VRk > hiK ? "por encima" : VRk < loK ? "por debajo" : "dentro"} de la banda sin memoria: ${
-                    VRk > hiK ? "el cambio de precios relativos persiste" : VRk < loK ? "los precios relativos revierten" : "no se distingue del ruido"
+                ? `VR(${k}) = ${fmt(VRk, 2)}, ${VRk > hiK ? "por encima" : VRk < loK ? "por debajo" : "dentro"} de la banda del azar (${fmt(loK, 2)}–${fmt(hiK, 2)}): ${
+                    VRk > hiK ? "el cambio de precios relativos persiste" : VRk < loK ? "los precios relativos revierten" : "no se distingue del azar"
                   }.`
                 : undefined
             }
             legend={[
               ...KS.map((x) => ({ label: `k = ${x}`, color: kColor[x] })),
-              { label: `Banda sin memoria (k = ${k})`, color: T.band, kind: "band" as const },
+              { label: `Banda del azar, k = ${k}`, color: T.band, kind: "band" as const },
+              { label: "Mediana del azar", color: T.text2, kind: "dash" as const },
             ]}
             table={tabla(KS.map((x) => ({ key: `VR${x}`, name: `VR(${x})`, f: fmt2 })))}
             source={FUENTE}
@@ -730,30 +794,31 @@ export function DifusionClient({
             howTo={
               <>
                 <p>
-                  &lt; 1: los precios relativos revierten (los rubros se turnan) · ≈ 1: ruido · &gt; 1: cambio persistente. La banda son los
-                  percentiles {P.banda_VR_percentiles[0]}–{P.banda_VR_percentiles[1]} de {P.replicas_banda_VR} réplicas sin memoria.
+                  Por debajo de la banda: los precios relativos revierten (los rubros se turnan) · dentro: no se distingue del azar · por encima:
+                  cambio persistente. La banda es el p5–p95 de {fmt(P.replicas_null, 0)} réplicas con los años permutados dentro de cada mes
+                  calendario, ítem por ítem; varía mes a mes porque cada ventana tiene su propia dispersión.
                 </p>
                 <Formula>VR_t(k) = Var(Σ_j r_i,t−j) / (k · media_j Var(r_i,t−j))</Formula>
               </>
             }
           >
             <ResponsiveContainer width="100%" height={260}>
-              <LineChart data={rows} margin={MARGEN}>
+              <ComposedChart data={rows} margin={MARGEN}>
                 <CartesianGrid {...S.grid} />
                 <XAxis dataKey="fecha" tickFormatter={fmtMes} interval={tickInterval} {...S.xAxis} />
                 <YAxis
-                  {...yAxisNice([...col("VR3"), ...col("VR6"), ...col("VR12")], 0.5, [1, ...(loK != null ? [loK] : []), ...(hiK != null ? [hiK] : [])])}
+                  {...yAxisNice([...col("VR3"), ...col("VR6"), ...col("VR12"), ...rows.flatMap((r) => (Array.isArray(r.VRband) ? (r.VRband as number[]) : []))], 0.5, [1])}
                   tickFormatter={(x) => fmt(x, 1)}
                   {...S.yAxis}
                 />
-                {loK != null && hiK != null && <ReferenceArea y1={loK} y2={hiK} {...S.band} label={labelTop("banda sin memoria")} />}
-                <ReferenceLine y={1} {...S.refLine} />
+                <Area dataKey="VRband" stroke="none" fill={T.band} fillOpacity={T.bandOpacity * 1.6} isAnimationActive={false} />
+                <Line dataKey="VRmed" stroke={T.text2} strokeDasharray="4 4" strokeWidth={1.25} dot={false} isAnimationActive={false} />
                 <Tooltip cursor={S.cursorLine} content={tip(KS.map((x) => ({ key: `VR${x}`, name: `VR(${x})`, color: kColor[x], fmt: fmt2 })))} />
                 {KS.map((x) => (
                   <Line key={x} dataKey={`VR${x}`} stroke={kColor[x]} strokeOpacity={x === k ? 1 : 0.45} {...S.line} />
                 ))}
                 <Customized component={(p: object) => <DirectLabels {...p} t={T} items={KS.map((x) => etiq(`VR${x}`, `VR(${x})`, kColor[x], fmt2))} />} />
-              </LineChart>
+              </ComposedChart>
             </ResponsiveContainer>
           </ChartFrame>
 
@@ -855,92 +920,174 @@ export function DifusionClient({
         </div>
       </Section>
 
+      {/* ================= PRECIOS RELATIVOS ================= */}
+      <Section
+        title="Precios relativos: nivel vs. dirección"
+        sub={`Cada rubro frente a su ancla (su precio relativo promedio en los ${precios.ancla.meses} meses sin cepo) y su dirección reciente. Sirve para ubicar el nivel; en el backtest no anticipó la corrección a ${precios.backtest.horizonte_meses} meses.`}
+      >
+        <div className="space-y-8">
+          <NivelDireccion precios={precios} ultimo={fmtMes(precios.fechas[precios.fechas.length - 1])} />
+          <EvolucionRelativa
+            precios={precios}
+            desde={data.fechas[a]}
+            hasta={data.fechas[b]}
+            ultimo={fmtMes(precios.fechas[precios.fechas.length - 1])}
+          />
+        </div>
+      </Section>
+
       {/* ================= MAPA ================= */}
       <Section title={`Mapa de precios relativos${SE}`}>
-        <Heatmap serie={serie} a={a} b={b} fuente={FUENTE} />
+        <Heatmap serie={serie} a={a} b={b} fuente={FUENTE} precios={precios} />
       </Section>
 
       {/* ================= METODOLOGÍA ================= */}
       <Section title="Metodología, fuentes y limitaciones">
         <details className="border-t border-ds-head pt-3 text-[13.5px] text-ds-text-2">
           <summary className="cursor-pointer text-ds-text font-medium select-none">Ver detalle</summary>
-          <div className="mt-4 space-y-5 max-w-[900px] leading-relaxed">
+          <div className="mt-4 space-y-6 max-w-[900px] leading-relaxed">
             <div>
-              <p className="font-semibold text-ds-text">Datos</p>
+              <p className="font-semibold text-ds-text">Datos y validación del universo</p>
               <ul className="list-disc ml-5 mt-1 space-y-1">
                 <li>
                   Fuente: INDEC, IPC base dic-2016 — <span className="font-mono text-[12px]">serie_ipc_aperturas.csv</span>,{" "}
                   <span className="font-mono text-[12px]">serie_ipc_divisiones.csv</span> y{" "}
-                  <span className="font-mono text-[12px]">ponderadores_ipc.xls</span>. Último dato: {fmtMes(data.ultimo_periodo)}.
+                  <span className="font-mono text-[12px]">ponderadores_ipc.xls</span>. La serie nacional arranca en dic-2016; último dato:{" "}
+                  {fmtMes(data.ultimo_periodo)}.
                 </li>
                 <li>
-                  Ítem = apertura × región. Canasta completa: {data.universos.todos.n} ítems ({data.universos.publicados.n} aperturas publicadas +{" "}
-                  {data.universos.todos.n - data.universos.publicados.n} «resto de división» derivados con los ponderadores para que la canasta
-                  cierre).
+                  Canasta completa: {VAL.items} ítems = {VAL.publicados} aperturas × región publicadas + {VAL.restos} «resto de división» (lo que
+                  la división pesa y sus aperturas publicadas no cubren). En cada región solo entran hojas del árbol de aperturas y a lo sumo un
+                  resto por división: no hay superposición. Los ponderadores suman {fmt(VAL.sumaPesos, 9)} (tolerancia 1e-6). INDEC los publica
+                  con 4 decimales y en dos regiones las divisiones sumaban 0,9999 y 1,0001, así que se reescalan dentro de cada región.
                 </li>
                 <li>
                   Ponderador nacional = peso de la región × ponderador regional (dic-2016), actualizado cada mes por precios relativos: ω
-                  <sub>i,t</sub> ∝ ω<sub>i</sub> · I<sub>i,t−1</sub>.
-                  {reconciliacionMaxPp != null && (
-                    <> El nivel general recomputado replica al publicado con un desvío máximo de {fmt(reconciliacionMaxPp, 3)} pp m/m.</>
-                  )}
-                </li>
-                <li>
-                  El nivel general de comparación es siempre el de la canasta completa (ponderado), en cualquier universo. En ventanas de k meses
-                  se usan los ponderadores del inicio de la ventana.
+                  <sub>i,t</sub> ∝ ω<sub>i</sub> · I<sub>i,t−1</sub>. En ventanas de k meses se usan los ponderadores del inicio de la ventana.
                 </li>
               </ul>
+              <p className="mt-2">
+                Reconciliación del nivel general recomputado con el publicado por INDEC, {VAL.reconciliacion.meses} meses: error máximo{" "}
+                {fmt(VAL.reconciliacion.maxPp, 3)} pp, error medio absoluto {fmt(VAL.reconciliacion.maePp, 4)} pp,{" "}
+                {VAL.reconciliacion.fueraDeTolerancia === 0
+                  ? "ningún mes por encima de 0,05 pp"
+                  : `${VAL.reconciliacion.fueraDeTolerancia} meses por encima de 0,05 pp`}
+                . Los mayores desvíos ({VAL.reconciliacion.peores.map((x) => `${fmtMes(x.fecha)}: ${fmtSigno(x.desvio, 3)} pp`).join("; ")}) caen en
+                los meses de inflación más alta y vienen del redondeo de los índices publicados (un decimal sobre bases de cuatro cifras). Por
+                región, el máximo es {fmt(Math.max(...Object.values(VAL.reconciliacion.regionMaxPp)), 3)} pp.
+              </p>
             </div>
+
             <div>
               <p className="font-semibold text-ds-text">Métricas</p>
               <div className="mt-1 space-y-0.5">
                 <Formula>r_i,t = ln(1+π_i,t) − ln(1+π_t) — cambio de precio relativo</Formula>
                 <Formula>D_t = Σ ω_i · 1[π_i,t &gt; π_t] — difusión puntual</Formula>
                 <Formula>C_t(k) = Σ ω_i · 1[π_i,t−j &gt; π_t−j para algún j &lt; k] — cobertura de rotación</Formula>
-                <Formula>C*_t(k) = 1 − Π_j (1 − D_t−j) — referencia: lideran ítems al azar</Formula>
                 <Formula>A_t(k) = Σ ω_i · 1[Π_i,t(k) &gt; Π_t(k)] — difusión acumulada</Formula>
                 <Formula>VR_t(k) = Var(Σ_j r_i,t−j) / (k · media_j Var(r_i,t−j)) — variance ratio (varianzas entre ítems)</Formula>
                 <Formula>ρ_t = corr_i(r_i,t , r_i,t−1) — persistencia</Formula>
               </div>
+            </div>
+
+            <div>
+              <p className="font-semibold text-ds-text">Referencia del azar: null por permutación</p>
+              <p className="mt-1">
+                Para C(k) y VR(k), {fmt(P.replicas_null, 0)} réplicas en las que, dentro de cada ítem, se permutan los años de r<sub>i,t</sub>{" "}
+                dentro de cada mes calendario. Cada rubro conserva su estacionalidad, su deriva media 2017–2026 y su volatilidad; se rompe la
+                dependencia entre meses consecutivos, que es lo que miden C y VR. Se informa la banda p5–p95 y la mediana para cada mes.
+              </p>
               <p className="mt-2">
-                VR − 1 equivale a la autocovarianza entre ítems de los precios relativos dentro de la ventana (normalizada). La banda de referencia
-                son los percentiles {P.banda_VR_percentiles[0]}–{P.banda_VR_percentiles[1]} de VR con {P.replicas_banda_VR} réplicas de{" "}
-                {P.metodo_banda_VR}.
+                <span className="font-medium text-ds-text">Alternativas descartadas.</span> 1 − Π(1 − D) supone que cualquier ítem tiene la misma
+                probabilidad de superar al nivel general cada mes. Con ítems heterogéneos la cobertura esperada es menor, así que la fórmula la
+                sobreestima y sesga la lectura hacia «persistencia»: en esta variante la diferencia con la mediana del null es{" "}
+                {fmt(sesgoCref, 1)} pp en promedio y {fmt((v.Cref["3"][t] ?? NaN) - (v.Cnull["3"][1][t] ?? NaN), 1)} pp en {mes}. El bootstrap por
+                bloques de 12 meses también se descartó: conserva la autocorrelación dentro del bloque, que es justamente lo que mide VR(3–12), y
+                el null reproduciría el valor observado.
+              </p>
+              <p className="mt-2">
+                <span className="font-medium text-ds-text">Cómo leerlo.</span> «Persistencia» significa persistencia más allá de la deriva media de
+                cada rubro en toda la muestra: una deriva constante de diez años no cuenta como señal; un episodio (congelamiento y después
+                recomposición) sí. Con 10 años por mes calendario el null queda algo angosto: en paneles de ruido puro, el valor observado cae
+                dentro de la banda p5–p95 en torno al 84 % de los meses (90 % nominal).
               </p>
             </div>
+
             <div>
               <p className="font-semibold text-ds-text">Reglas del régimen</p>
               <ul className="list-disc ml-5 mt-1 space-y-1">
                 <li>
-                  Amplitud, sobre D̄ (promedio de 3 meses de D): concentrada si D̄ &lt; {fmt(P.umbral_D_concentrada, 0)} %; generalizada si D̄ ≥{" "}
-                  {fmt(P.umbral_D_generalizada, 0)} %; intermedia en el medio. El punto neutro no es 50 %: la distribución de variaciones de
-                  precios es asimétrica a derecha y la mediana histórica de D ronda 44 %.
+                  Amplitud, sobre D̄ (promedio de 3 meses de D): concentrada si está en el tercio inferior de su historia, generalizada si está en el
+                  superior, intermedia en el medio. Terciles de esta variante: {fmt(umbLo)} y {fmt(umbHi)} %. Se calibra contra la historia
+                  porque D cae estructuralmente bajo 50 % (la distribución de variaciones es asimétrica a la derecha) y un umbral fijo no es
+                  neutro. Los umbrales anteriores (40 y 45 %) eran heurísticos.
                 </li>
                 <li>
-                  Dinámica: rotación si VR(3) cae debajo de la banda, o si VR(3) &lt; 1 y C(3) supera la referencia al azar; persistencia si VR(3)
-                  supera la banda, o si VR(3) &gt; 1 y C(3) queda debajo de la referencia; si no, ruido.
+                  Dinámica, contra el null del mes: persistencia si VR(3) supera el p95 o C(3) queda bajo el p5; rotación si VR(3) cae bajo el p5
+                  o C(3) supera el p95; si no sale de ninguna banda, o las dos señales se contradicen, «sin patrón distinguible del azar».
                 </li>
-                <li>El régimen combina ambas; con amplitud intermedia o dinámica de ruido se informa «sin señal clara».</li>
-                <li>La bajada de la página se arma con estas mismas reglas.</li>
+                <li>El régimen combina ambas; con amplitud intermedia o sin patrón se informa «sin señal clara». La bajada se arma con estas reglas.</li>
+                <li>Robustez: cuántas de las 12 variantes (universo × ponderación × serie) repiten la lectura, cada una con sus propios umbrales.</li>
               </ul>
             </div>
+
+            <div>
+              <p className="font-semibold text-ds-text">Precios relativos y anclas</p>
+              <p className="mt-1">
+                Nivel relativo L<sub>i,t</sub> = ln(I<sub>i,t</sub>/I<sub>i,dic-16</sub>) − ln(H<sub>t</sub>/H<sub>dic-16</sub>), con series
+                desestacionalizadas. El desvío se mide contra un ancla, no contra una fecha base: con base 2021 la ropa parece atrasada cuando
+                corrige un nivel alto, y con base en dic-2023 la electricidad parece normalizada.
+              </p>
+              <ul className="list-disc ml-5 mt-1 space-y-1">
+                <li>
+                  <span className="font-medium text-ds-text">Ancla externa o de costo: no se usa.</span> Las candidatas no son confiables o no
+                  corresponden al ítem: INDEC publica electricidad y gas en una sola apertura; la cobertura del costo de generación (CAMMESA) no tiene
+                  una serie oficial descargable; la paridad del gas no tiene una serie pública sin registro; los niveles de precios del ICP 2021
+                  están medidos al tipo de cambio oficial en pleno cepo; los alquileres por m² son solo de CABA, trimestrales y en PDF.
+                </li>
+                <li>
+                  <span className="font-medium text-ds-text">Historia filtrada por régimen (la que se usa).</span> Promedio de L en los{" "}
+                  {precios.ancla.meses} meses sin cepo cambiario ({precios.ancla.periodos.map(([x, y]) => `${fmtMes(x)} a ${fmtMes(y)}`).join(" y ")};{" "}
+                  {precios.ancla.fuentes}). Se usa el criterio legal del cepo y no una brecha medida porque es oficial y verificable; los
+                  congelamientos tarifarios y los controles de precios generalizados de 2019–2023 quedan dentro del período excluido.
+                </li>
+                <li>
+                  <span className="font-medium text-ds-text">Promedio simple de toda la muestra:</span> solo como referencia; la distancia entre
+                  ambas anclas es la barra horizontal del gráfico.
+                </li>
+              </ul>
+              <p className="mt-2">
+                <span className="font-medium text-ds-text">¿Sirve para estimar?</span> Backtest con {precios.backtest.n_items} aperturas nacionales,
+                orígenes cada {precios.backtest.horizonte_meses} meses desde {fmtMes(precios.backtest.origenes[0])} y anclas calculadas solo con datos
+                pasados: el cambio del precio relativo en los {precios.backtest.horizonte_meses} meses siguientes contra el desvío da β ={" "}
+                {fmt(precios.backtest.filtrada.beta, 2)} (t = {fmt(precios.backtest.filtrada.t, 1)}, R² = {fmt(precios.backtest.filtrada.r2 * 100, 0)} %,
+                acierto de signo {fmt(precios.backtest.filtrada.acierto_signo * 100, 0)} %). Con el promedio simple: β ={" "}
+                {fmt(precios.backtest.simple.beta, 2)} (t = {fmt(precios.backtest.simple.t, 1)}). Con la dirección pasada (momentum): β ={" "}
+                {fmt(precios.backtest.momentum.beta, 2)} (t = {fmt(precios.backtest.momentum.t, 1)}). Ninguno es distinto de cero: en esta muestra
+                el desvío no predijo la corrección en ese horizonte. Se muestra como lectura de nivel, no como señal de timing.
+              </p>
+            </div>
+
             <div>
               <p className="font-semibold text-ds-text">Desestacionalización (s.e.)</p>
               <p className="mt-1">
                 {P.desest.metodo}. Resultaron estacionales {P.desest.items_ajustados} de {P.desest.items_total} ítems; el resto queda sin ajustar.
-                El nivel general desestacionalizado es la agregación de los ítems ajustados (método indirecto) y se revisa con cada dato nuevo.
+                Se trabaja sobre Δln, donde los cambios de nivel (dic-2023) son outliers de pocos meses que la versión robusta pondera a cero, y la
+                ventana de 7 años deja que el patrón estacional cambie. Se descartó X-13 con regresores de cambio de nivel: agrega un binario
+                externo y una especificación por serie para un beneficio que no se puede validar con menos de tres años del régimen actual. El
+                nivel general s.e. es la agregación de los ítems ajustados y se revisa con cada dato nuevo.
               </p>
             </div>
+
             <div>
               <p className="font-semibold text-ds-text">Limitaciones</p>
               <ul className="list-disc ml-5 mt-1 space-y-1">
-                <li>INDEC publica 27 aperturas por región: la difusión es más gruesa que la que se obtendría con el relevamiento completo de precios.</li>
-                <li>Los ítems «resto de división» son residuos y pueden ser ruidosos; el universo «Aperturas» los excluye.</li>
-                <li>
-                  VR &lt; 1 puede reflejar estacionalidad o ruido de medición en los índices (que revierte por construcción), no solo que los rubros
-                  «se turnan»: conviene mirar también la versión desestacionalizada.
-                </li>
-                <li>Los umbrales de amplitud son heurísticos y los ponderadores corresponden a la canasta ENGHo 2004/05.</li>
+                <li>La serie nacional arranca en dic-2016: el ancla filtrada se apoya en {precios.ancla.meses} meses y en dos regímenes distintos.</li>
+                <li>Las anclas tienen error propio: el período sin cepo 2017–2019 incluye tarifas todavía en recomposición, y desde 2024 hay cambios estructurales (apertura importadora).</li>
+                <li>El nivel se muestra como rango entre anclas, no como un número exacto.</li>
+                <li>INDEC publica 27 aperturas por región: la difusión es más gruesa que con el relevamiento completo; los «resto de división» pueden ser ruidosos.</li>
+                <li>Los ponderadores corresponden a la canasta ENGHo 2004/05.</li>
+                <li>Es una lectura descriptiva, no una proyección.</li>
               </ul>
             </div>
           </div>

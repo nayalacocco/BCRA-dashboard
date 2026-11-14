@@ -22,7 +22,7 @@ Definiciones
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -152,8 +152,26 @@ def build_panel(
             elif resto < -1e-4:
                 warnings.append(f"{r}: aperturas de {d} pesan más que la división ({covered:.4f} > {w_d:.4f})")
 
+    items = normalizar_pesos(items)
     panel = pd.DataFrame(cols).sort_index()
     return items, panel, warnings
+
+
+def normalizar_pesos(items: list[Item]) -> list[Item]:
+    """
+    INDEC publica los ponderadores con 4 decimales: en algunas regiones las divisiones suman 0,9999 o 1,0001.
+    Se reescalan los pesos dentro de cada región para que sumen exactamente 1, y el nacional se recalcula
+    como W_region · w_item|region. El cambio es del orden de 1e-4 relativo; deja la canasta cerrando en 1
+    con tolerancia 1e-6 (check `universo_consistente`).
+    """
+    suma: dict[str, float] = {}
+    for it in items:
+        suma[it.region] = suma.get(it.region, 0.0) + it.peso_region
+    out = []
+    for it in items:
+        w = it.peso_region / suma[it.region]
+        out.append(replace(it, peso_region=w, peso_nacional=PESO_REGION_NORM[it.region] * w))
+    return out
 
 
 IMPUTADOS: dict[str, list[str]] = {}

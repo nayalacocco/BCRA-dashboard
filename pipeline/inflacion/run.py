@@ -30,7 +30,7 @@ import requests
 
 from . import indec
 from .items import IMPUTADOS, build_panel
-from .validate import check_divisiones_cubiertas, check_fechas, check_outliers, check_ponderadores, reconciliacion, to_dict
+from .validate import check_universo, check_divisiones_cubiertas, check_fechas, check_outliers, check_ponderadores, reconciliacion, to_dict
 
 UA = {"User-Agent": "Mozilla/5.0 (Atlas WM bcra-dashboard pipeline; +https://github.com/nayalacocco/BCRA-dashboard)"}
 SCHEMA_VERSION = 1
@@ -72,7 +72,7 @@ def main() -> int:
 
     items, panel, warns = build_panel(div, ape, pond)
 
-    checks = [check_ponderadores(pond), check_fechas(div, ape, panel)]
+    checks = [check_ponderadores(pond), check_universo(items), check_fechas(div, ape, panel)]
     rec_check, rec = reconciliacion(items, panel, div)
     checks += [rec_check, check_divisiones_cubiertas(items, panel, div), check_outliers(panel)]
 

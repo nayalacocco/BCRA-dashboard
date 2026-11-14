@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "generado_utc": "2026-11-13T18:56:50+00:00",
+ "generado_utc": "2026-11-13T21:47:14+00:00",
  "ultimo_periodo": "2026-10",
  "n_items": 218,
  "n_items_publicados": 164,
@@ -39,6 +39,17 @@
    "datos": {
     "regiones": {},
     "suma_regiones": 1.0010000000000001
+   }
+  },
+  {
+   "nombre": "universo_consistente",
+   "ok": true,
+   "bloqueante": true,
+   "detalle": "218 ítems sin superposición; pesos suman 1 (tolerancia 1e-06; desvío nacional 1.1e-16)",
+   "datos": {
+    "items": 218,
+    "desvio_nacional": 1.1102230246251565e-16,
+    "desvio_max_region": 4.440892098500626e-16
    }
   },
   {
