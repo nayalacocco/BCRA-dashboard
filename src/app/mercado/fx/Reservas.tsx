@@ -455,14 +455,11 @@ export function CalendarioVencimientos({ data }: { data: ReservasData }) {
   return (
     <ChartFrame
       title="Vencimientos en moneda extranjera de los próximos 12 meses, por deudor (USD M)"
-      sub={`En 12 meses vencen USD ${usd(tesoro12)} M del Tesoro y USD ${usd(bcra12)} M del BCRA (sin contar la renovación del swap con China).`}
+      sub={`En 12 meses vencen USD ${usd(tesoro12)} M del Tesoro y USD ${usd(bcra12)} M del BCRA (el swap con China no es un vencimiento: el acuerdo marco rige hasta 2031).`}
       legend={c.series.map((s) => ({ label: `${s.deudor}: ${s.concepto}`, color: colores[s.id]?.color ?? t.neutralBar, kind: "block" as const }))}
       table={{
         columns: ["Deudor y concepto", ...c.tramos],
-        rows: [
-          ...c.series.map((s) => [`${s.deudor}: ${s.concepto}`, ...s.valores.map((v) => usd(v))]),
-          ["BCRA: swap con China (renovable)", ...c.swaps.map((v) => usd(v))],
-        ],
+        rows: c.series.map((s) => [`${s.deudor}: ${s.concepto}`, ...s.valores.map((v) => usd(v))]),
       }}
       source="Fuente: BCRA, planilla de Reservas Internacionales y Liquidez en ME (NEDD-FMI), sección II."
       lastData={fmtFecha(c.planilla)}

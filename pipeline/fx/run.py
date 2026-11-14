@@ -56,7 +56,11 @@ FUENTES_META = {
 CRITERIOS = {
     "brutas": "Activos de reserva oficiales (I.A).",
     "encajes": "Depósitos de entidades en ME en el BCRA. Suman a las brutas y son de los bancos.",
-    "swaps": "Posición corta a término de swaps de monedas: la línea completa con China (suma entera a las brutas) y cualquier otro swap efectivamente activado.",
+    "swaps": (
+        "Posición corta a término de swaps de monedas: la línea completa con China (suma entera a las brutas) y cualquier "
+        "otro swap efectivamente activado. Se resta por suma a las brutas, no por plazo: el acuerdo marco con China se "
+        "renovó en ago-2026 por cinco años (hasta 2031), aunque la planilla informa cada operación a ≤ 12 meses."
+    ),
     "pases": "Pases pasivos en ME con bancos, vencimientos ≤ 12 meses.",
     "swaps_pases": "Hasta nov-2022 la planilla informa el swap con China junto con los pases (II.3).",
     "otros_bcra": "BOPREAL, organismos, intereses y otras obligaciones en ME del BCRA con vencimiento ≤ 12 meses. La planilla no los separa entre sí.",
@@ -360,8 +364,9 @@ def construir(ins: Insumos, out: Path) -> dict:
         "swaps": [r1(t["bcra_swaps"][k]) for k in tramos],
         "nota": (
             "La planilla del BCRA informa vencimientos por tramos (≤1 m, 1–3 m, 3–12 m), no mes a mes. "
-            "El swap con China se muestra aparte: es una línea renovable cuyo vencimiento contractual "
-            "no implica salida de divisas mientras se renueve."
+            "El swap con China no se cuenta como vencimiento: la planilla registra cada operación a 3–12 meses, pero el "
+            "acuerdo marco se renovó en agosto de 2026 por cinco años (hasta 2031) y las operaciones se renuevan dentro "
+            "de él. Se sigue restando de las reservas netas porque suma completo a las brutas."
         ),
     }
 

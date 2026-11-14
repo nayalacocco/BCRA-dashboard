@@ -53,6 +53,7 @@ Distancias:
 - El swap con China suma completo a las brutas, así que se resta completo.
 - Un swap no activado (por ejemplo, el del Tesoro de EE.UU.) no suma, así que solo se resta lo usado.
 - La planilla registra ambos casos en II.2(a), posiciones cortas a término, y se resta ese total.
+- El swap con China se resta por lo que suma a las brutas, no por su plazo. El acuerdo marco se renovó el 05-08-2026 por cinco años (hasta 2031). La planilla registra cada operación a 3–12 meses, pero no se cuenta como vencimiento en el calendario.
 
 ### Perímetro A — BCRA
 
