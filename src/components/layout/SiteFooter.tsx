@@ -23,6 +23,11 @@ function PieInflacion() {
 
 const PIES: Record<string, () => React.ReactNode> = {
   "/inflacion/difusion": () => <PieInflacion />,
+  "/mercado/fx": () => (
+    <span>
+      Fuentes: BCRA (API v4, planilla NEDD-FMI), argentinadatos.com · actualización automática dos veces por día hábil
+    </span>
+  ),
 };
 
 export function SiteFooter() {
