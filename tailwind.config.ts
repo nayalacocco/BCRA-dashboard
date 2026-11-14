@@ -10,6 +10,26 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        // Sistema de diseño v5: variables CSS generadas desde src/design/tokens.ts
+        ds: {
+          bg: "var(--bg)",
+          surface: "var(--surface)",
+          sidebar: "var(--sidebar)",
+          rule: "var(--rule)",
+          "rule-strong": "var(--rule-strong)",
+          text: "var(--text)",
+          "text-2": "var(--text-2)",
+          muted: "var(--muted)",
+          head: "var(--head)",
+          celeste: "var(--celeste)",
+          soft: "var(--soft)",
+          s1: "var(--s1)",
+          s2: "var(--s2)",
+          s3: "var(--s3)",
+          s4: "var(--s4)",
+          "div-lo": "var(--div-lo)",
+          "div-hi": "var(--div-hi)",
+        },
         // BCRA brand-adjacent palette
         bcra: {
           50: "#eef2ff",
@@ -23,6 +43,7 @@ const config: Config = {
       },
       fontFamily: {
         sans: ["Inter", "system-ui", "sans-serif"],
+        serif: ['"Source Serif 4"', "Georgia", '"Times New Roman"', "serif"],
         mono: ["JetBrains Mono", "monospace"],
       },
     },

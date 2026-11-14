@@ -1,46 +1,71 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { TOKENS, type ThemeName, type Tokens } from "@/design/tokens";
 
-type Theme = "light" | "dark";
+/**
+ * Tema: claro por defecto; oscuro opcional, con la preferencia en localStorage.
+ * Se marca en <html> con `data-theme` (variables del sistema v5) y con la clase `dark`
+ * (las pestañas que todavía usan las clases `dark:` de Tailwind).
+ */
+export const THEME_KEY = "bcra-theme";
 
 interface ThemeContextValue {
-  theme: Theme;
+  theme: ThemeName;
+  setTheme: (t: ThemeName) => void;
   toggle: () => void;
 }
 
-const ThemeContext = createContext<ThemeContextValue>({
-  theme: "light",
-  toggle: () => {},
-});
+const ThemeContext = createContext<ThemeContextValue>({ theme: "light", setTheme: () => {}, toggle: () => {} });
+
+function aplicar(t: ThemeName) {
+  const el = document.documentElement;
+  el.dataset.theme = t;
+  el.classList.toggle("dark", t === "dark");
+}
+
+function leer(): ThemeName {
+  try {
+    return localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+
+function guardar(t: ThemeName) {
+  try {
+    localStorage.setItem(THEME_KEY, t);
+  } catch {
+    /* modo privado o storage bloqueado: el tema dura la sesión */
+  }
+}
+
+/** Script inline para <head>: aplica el tema guardado antes del primer pintado (evita el parpadeo). */
+export const THEME_BOOT_SCRIPT = `(function(){var t='light';try{if(localStorage.getItem('${THEME_KEY}')==='dark')t='dark'}catch(e){}var d=document.documentElement;d.dataset.theme=t;if(t==='dark')d.classList.add('dark');})();`;
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>("light");
+  const [theme, setThemeState] = useState<ThemeName>("light");
 
   useEffect(() => {
-    const stored = localStorage.getItem("bcra-theme") as Theme | null;
-    const preferred = window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
-    const initial = stored ?? preferred;
-    setTheme(initial);
-    document.documentElement.classList.toggle("dark", initial === "dark");
+    const t = leer();
+    setThemeState(t);
+    aplicar(t);
   }, []);
 
-  const toggle = useCallback(() => {
-    setTheme((t) => {
-      const next = t === "light" ? "dark" : "light";
-      localStorage.setItem("bcra-theme", next);
-      document.documentElement.classList.toggle("dark", next === "dark");
-      return next;
-    });
+  const setTheme = useCallback((t: ThemeName) => {
+    setThemeState(t);
+    aplicar(t);
+    guardar(t);
   }, []);
 
-  return (
-    <ThemeContext.Provider value={{ theme, toggle }}>
-      {children}
-    </ThemeContext.Provider>
-  );
+  const toggle = useCallback(() => setTheme(theme === "light" ? "dark" : "light"), [theme, setTheme]);
+
+  return <ThemeContext.Provider value={{ theme, setTheme, toggle }}>{children}</ThemeContext.Provider>;
 }
 
 export const useTheme = () => useContext(ThemeContext);
+
+/** Tokens resueltos del tema activo, para los gráficos (Recharts necesita colores literales). */
+export function useTokens(): Tokens {
+  return TOKENS[useTheme().theme];
+}
